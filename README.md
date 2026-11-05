@@ -46,7 +46,7 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 
 ## 运行与卸载
 
-插件启动一个全局 watcher，每 500 ms 检查 IINA 窗口所在显示器，并在目标变化时通知 daemon。插件启动 IINA WebSocket API 的本机服务，Native Helper 每秒发送一条带序号和临时令牌的 `PING`，插件回复对应的 `PONG`。Helper 最多等待 3 秒；超时或断连后关闭 daemon 的 Unix Socket 会话，由 daemon 恢复接管的显示器。插件从本地端口 `43120–43151` 中选择可用端口。心跳不再周期性写入磁盘；升级到此版本后，插件启动时会顺手删除旧版遗留的 `@data/watcher.heartbeat`。标题栏归属使用窗口顶部 32 pt 区域判定。日志可在 IINA 的 **Window → Log Viewer** 查看。
+插件启动一个全局 watcher，每 500 ms 检查 IINA 窗口所在显示器，并在目标变化时通知 daemon。插件启动 IINA WebSocket API 的本机服务，Native Helper 每秒发送一条带序号和临时令牌的 `PING`，插件回复对应的 `PONG`。Helper 接受文本或二进制 WebSocket 数据帧（IINA 的 `sendText` 会以 UTF-8 二进制帧传输），最多等待 3 秒；超时或断连后关闭 daemon 的 Unix Socket 会话，由 daemon 恢复接管的显示器。插件从本地端口 `43120–43151` 中选择可用端口。心跳不再周期性写入磁盘；升级到此版本后，插件启动时会删除旧版遗留的 `@data/watcher.heartbeat`。标题栏归属使用窗口顶部 32 pt 区域判定。日志可在 IINA 的 **Window → Log Viewer** 查看。
 
 卸载时，在 IINA 的插件设置中移除 **Dell Display Color Preset**。IINA 结束插件会话后 daemon 会恢复其接管的显示器。插件数据目录 `@data` 中的 helper 和 Profile 文件可随插件一并删除；daemon 运行目录位于 `~/Library/Application Support/IINA/plugins/dell-color-preset/run/`。
 

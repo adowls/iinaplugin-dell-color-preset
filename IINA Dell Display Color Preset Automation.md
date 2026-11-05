@@ -1,6 +1,6 @@
 ---
 created: 2026-11-04T18:29:19+08:00
-updated: 2026-11-05T11:20:00+08:00
+updated: 2026-11-05T12:10:00+08:00
 ---
 
 # 1. IINA Dell Display Color Preset Automation
@@ -960,7 +960,7 @@ SET_TARGET(null)
 
 插件通过 IINA WebSocket API 启动本机服务，并从端口 `43120–43151` 中选择可用端口；端口占用时依次尝试下一个。启动成功后将端口和本次运行生成的临时令牌传给 Native Helper。
 
-Native Helper 每秒向插件发送带令牌和递增序号的 `PING`。插件只对令牌有效且序号合法的消息回复匹配的 `PONG`。Helper 等待响应最多 3 秒；超时、响应不匹配或连接断开时，关闭其到 daemon 的 Unix Socket 会话，由 daemon 恢复所有接管显示器。
+Native Helper 每秒向插件发送带令牌和递增序号的 `PING`。插件只对令牌有效且序号合法的消息回复匹配的 `PONG`。Helper 接受文本帧和二进制帧中的 UTF-8 JSON，因为 IINA WebSocket API 的 `sendText` 会将 UTF-8 内容作为二进制帧发送。Helper 等待响应最多 3 秒；超时、响应不匹配或连接断开时，关闭其到 daemon 的 Unix Socket 会话，由 daemon 恢复所有接管显示器。
 
 心跳通过 Socket 消息传递，不创建或定时改写心跳文件。插件安装时会删除旧版本遗留的 `@data/watcher.heartbeat`。该清理只针对这个历史心跳文件，不影响 helper、Profile 或 daemon 状态。
 

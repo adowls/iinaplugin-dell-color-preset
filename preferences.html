@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dell Display Color Preset Profiles</title>
+  <style>
+    body { padding: 10px; }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 340px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      tab-size: 2;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    #status { min-height: 1.4em; margin-top: 8px; }
+    .note { margin: 4px 0 10px; }
+  </style>
+</head>
+<body>
+  <div class="pref-section">
+    <strong>Display profiles (JSON)</strong>
+    <p class="small secondary pref-help note">
+      Edit the complete profiles document. Save changes, then fully quit and restart IINA to apply them.
+      A profile with <code>verified: true</code> may be used for automatic DDC writes.
+    </p>
+    <textarea id="profiles" spellcheck="false" aria-label="Profiles JSON"></textarea>
+    <div class="actions">
+      <button id="save" type="button">Save</button>
+      <button id="defaults" type="button">Restore bundled defaults</button>
+    </div>
+    <div id="status" role="status" aria-live="polite"></div>
+  </div>
+  <script>
+    (() => {
+      const key = "profiles_json";
+      const editor = document.getElementById("profiles");
+      const status = document.getElementById("status");
+      const prefs = window.iina.preferences;
+      let bundledProfiles = "";
+      let currentProfiles = "";
+
+      function validate(document) {
+        if (!document || document.schemaVersion !== 1 || !Array.isArray(document.profiles) || document.profiles.length === 0) {
+          throw new Error("Expected schemaVersion 1 and a non-empty profiles array.");
+        }
+        const seen = new Set();
+        for (const profile of document.profiles) {
+          if (!profile || typeof profile.model !== "string" || !profile.model.trim() ||
+              !Number.isInteger(profile.vendorID) || profile.vendorID < 0 || profile.vendorID > 65535 ||
+              !Number.isInteger(profile.productID) || profile.productID < 0 || profile.productID > 65535 ||
+              !Number.isInteger(profile.featureCode) || profile.featureCode < 0 || profile.featureCode > 255 ||
+              !Number.isInteger(profile.movieValue) || profile.movieValue < 0 || profile.movieValue > 65535 ||
+              typeof profile.verified !== "boolean") {
+            throw new Error("Each profile needs model, valid numeric IDs, movieValue, and a boolean verified flag.");
+          }
+          const identity = `${profile.vendorID}:${profile.productID}:${profile.model.trim().toUpperCase()}`;
+          if (seen.has(identity)) throw new Error(`Duplicate profile: ${identity}.`);
+          seen.add(identity);
+        }
+      }
+
+      function loadEditor() {
+        let text = typeof currentProfiles === "string" && currentProfiles.trim()
+          ? currentProfiles
+          : bundledProfiles;
+        try {
+          validate(JSON.parse(text));
+        } catch (_) {
+          text = bundledProfiles;
+        }
+        editor.value = text;
+      }
+
+      prefs.get("bundled_profiles_json", (value) => {
+        bundledProfiles = typeof value === "string" && value.trim() ? value : "";
+        if (bundledProfiles) loadEditor();
+      });
+      prefs.get(key, (value) => {
+        currentProfiles = typeof value === "string" ? value : "";
+        loadEditor();
+      });
+
+      document.getElementById("save").addEventListener("click", () => {
+        try {
+          validate(JSON.parse(editor.value));
+          prefs.set(key, editor.value);
+          prefs.sync();
+          status.textContent = "Saved. Fully quit and restart IINA to apply these profiles.";
+          status.className = "small";
+        } catch (error) {
+          status.textContent = error instanceof SyntaxError ? `Invalid JSON: ${error.message}` : error.message;
+          status.className = "small";
+        }
+      });
+
+      document.getElementById("defaults").addEventListener("click", () => {
+        if (!bundledProfiles) {
+          status.textContent = "Bundled defaults are not available yet. Close and reopen this settings page.";
+          status.className = "small";
+          return;
+        }
+        editor.value = bundledProfiles;
+        status.textContent = "Defaults loaded in the editor. Click Save to store them.";
+        status.className = "small secondary";
+      });
+    })();
+  </script>
+</body>
+</html>

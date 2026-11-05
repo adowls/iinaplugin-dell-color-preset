@@ -12,6 +12,26 @@ const helperPath = iina.utils.resolvePath("@data/bin/display-helper");
 const heartbeatPath = "@data/watcher.heartbeat";
 const helperTempPath = `${helperPath}.new`;
 
+function validateProfilesDocument(document) {
+  if (!document || document.schemaVersion !== 1 || !Array.isArray(document.profiles) || document.profiles.length === 0) {
+    throw new Error("Expected schemaVersion 1 and a non-empty profiles array");
+  }
+  const seen = new Set();
+  for (const profile of document.profiles) {
+    if (!profile || typeof profile.model !== "string" || !profile.model.trim() ||
+        !Number.isInteger(profile.vendorID) || profile.vendorID < 0 || profile.vendorID > 65535 ||
+        !Number.isInteger(profile.productID) || profile.productID < 0 || profile.productID > 65535 ||
+        !Number.isInteger(profile.featureCode) || profile.featureCode < 0 || profile.featureCode > 255 ||
+        !Number.isInteger(profile.movieValue) || profile.movieValue < 0 || profile.movieValue > 65535 ||
+        typeof profile.verified !== "boolean") {
+      throw new Error("Each profile needs model, valid numeric IDs, movieValue, and a boolean verified flag");
+    }
+    const key = `${profile.vendorID}:${profile.productID}:${profile.model.trim().toUpperCase()}`;
+    if (seen.has(key)) throw new Error(`Duplicate profile: ${key}`);
+    seen.add(key);
+  }
+}
+
 iina.console.log(`[Dell Color Preset] Global entry loaded; data directory: ${iina.utils.resolvePath("@data/")}`);
 startupTrace("global entry APIs initialized");
 
@@ -25,6 +45,34 @@ try {
   startupTrace(`resource load failed: ${error}`);
   iina.console.error(`[Dell Color Preset] Cannot load bundled resources: ${error}`);
   throw error;
+}
+
+const bundledProfilesJSON = JSON.stringify(profilesPayload, null, 2);
+iina.preferences.set("bundled_profiles_json", bundledProfilesJSON);
+iina.preferences.sync();
+let profilesJSON = iina.preferences.get("profiles_json");
+if (typeof profilesJSON !== "string" || profilesJSON.trim().length === 0) {
+  try {
+    if (iina.file.exists("@data/bin/profiles.json")) {
+      profilesJSON = iina.file.read("@data/bin/profiles.json");
+    }
+  } catch (_) {
+    profilesJSON = undefined;
+  }
+  if (typeof profilesJSON !== "string" || profilesJSON.trim().length === 0) {
+    profilesJSON = bundledProfilesJSON;
+  }
+  iina.preferences.set("profiles_json", profilesJSON);
+  iina.preferences.sync();
+}
+try {
+  validateProfilesDocument(JSON.parse(profilesJSON));
+} catch (error) {
+  iina.console.error(`[Dell Color Preset] Invalid saved profiles; using bundled defaults: ${error}`);
+  startupTrace(`invalid saved profiles; using bundled defaults: ${error}`);
+  profilesJSON = bundledProfilesJSON;
+  iina.preferences.set("profiles_json", profilesJSON);
+  iina.preferences.sync();
 }
 
 async function installBundledHelper() {
@@ -51,7 +99,7 @@ async function installBundledHelper() {
   if (move.status !== 0) throw new Error(`Cannot install bundled helper: ${move.stderr}`);
   startupTrace("helper installed");
 
-  iina.file.write("@data/bin/profiles.json", JSON.stringify(profilesPayload));
+  iina.file.write("@data/bin/profiles.json", profilesJSON);
   startupTrace("profile file installed");
 }
 

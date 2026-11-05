@@ -13,7 +13,7 @@ all: $(TARGET)
 plugin: $(TARGET)
 	python3 scripts/embed_plugin_resources.py $(TARGET) $(PROFILE_JSON) ..
 	mkdir -p build/DellColorPreset.iinaplugin
-	cp ../Info.json ../entry.js ../main.js ../helperPayload.js ../profilesPayload.js build/DellColorPreset.iinaplugin/
+	cp ../Info.json ../entry.js ../main.js ../preferences.html ../helperPayload.js ../profilesPayload.js build/DellColorPreset.iinaplugin/
 
 $(TARGET): $(SOURCES) DisplayDiscovery.h DisplayProfile.h DDC/DDCBackend.h Daemon/DisplayStateManager.h Daemon/DisplaySocketServer.h Daemon/DisplayWatcher.h $(PROFILE_JSON)
 	mkdir -p build

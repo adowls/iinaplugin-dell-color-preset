@@ -50,6 +50,10 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 
 卸载时，在 IINA 的插件设置中移除 **Dell Display Color Preset**。IINA 结束插件会话后 daemon 会恢复其接管的显示器。插件数据目录 `@data` 中的 helper 和 Profile 文件可随插件一并删除；daemon 运行目录位于 `~/Library/Application Support/IINA/plugins/dell-color-preset/run/`。
 
+### 编辑 Display Profiles
+
+在 IINA 的 **Settings → Plugins → Dell Display Color Preset → Preferences** 中编辑 `profiles.json` 内容并保存。设置页会校验 JSON 结构、字段类型、数值范围和重复 Profile。保存后需要完全退出并重新启动 IINA；下次启动时，插件会把已保存配置写入 `@data/bin/profiles.json`，helper 随后加载它。若保存内容无效，插件会使用仓库内置默认 Profile 并在 IINA 日志中报告错误。
+
 ## Native Helper 手动调试
 
 构建完成后可使用以下命令检查显示器、Profile 和 DDC：

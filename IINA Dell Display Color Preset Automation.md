@@ -5,7 +5,7 @@ updated: 2026-11-05T11:20:00+08:00
 
 # 1. IINA Dell Display Color Preset Automation
 
-> **实现状态（2026-11-05）**：本文件最初是实现前的设计方案，以下部分条目仍保留历史规划语境。仓库当前实现已支持 Dell U2723QE（Product ID `0x426D`）和 U2725QE（Product ID `0x436B`），两者 Movie VCP 值均为 `0x03`，且已在用户实机验证。当前 Profile 可在 IINA 插件 Preferences 页面编辑；GitHub 发布仓库提交 `helperPayload.js` 和 `profilesPayload.js`，IINA 安装时不会替插件编译 Objective-C 源码。构建与安装步骤以同目录 `README.md` 为准。
+> **实现状态（2026-11-05）**：本文件最初是实现前的设计方案，以下部分条目仍保留历史规划语境。仓库当前实现已支持 Dell U2723QE（Product ID `0x426D`）和 U2725QE（Product ID `0x436B`），两者 Movie VCP 值均为 `0x03`，且已在用户实机验证。当前 Profile 可在 IINA 插件 Preferences 页面编辑；GitHub 发布仓库提交 `helperPayload.js` 和 `profilesPayload.js`，IINA 安装时不会替插件编译 Objective-C 源码。插件与 Native Helper 通过本机 WebSocket PING/PONG 保持心跳，不再周期性写心跳文件。构建与安装步骤以同目录 `README.md` 为准。
 
 ## 1.1. 技术设计方案（Technical Design Specification）
 
@@ -956,6 +956,14 @@ SET_TARGET(null)
 
 如果显示器拓扑发生变化，应重新解析身份，并处理已断开显示器的状态记录。
 
+## 9.5. 插件存活心跳
+
+插件通过 IINA WebSocket API 启动本机服务，并从端口 `43120–43151` 中选择可用端口；端口占用时依次尝试下一个。启动成功后将端口和本次运行生成的临时令牌传给 Native Helper。
+
+Native Helper 每秒向插件发送带令牌和递增序号的 `PING`。插件只对令牌有效且序号合法的消息回复匹配的 `PONG`。Helper 等待响应最多 3 秒；超时、响应不匹配或连接断开时，关闭其到 daemon 的 Unix Socket 会话，由 daemon 恢复所有接管显示器。
+
+心跳通过 Socket 消息传递，不创建或定时改写心跳文件。插件安装时会删除旧版本遗留的 `@data/watcher.heartbeat`。该清理只针对这个历史心跳文件，不影响 helper、Profile 或 daemon 状态。
+
 ---
 
 # 10. Unix Domain Socket 协议
@@ -1173,7 +1181,7 @@ RESTORE_PENDING
 
 ## 12.5. IINA 插件崩溃
 
-Socket 断开后由 daemon 自动恢复。
+Native Helper 在 WebSocket 心跳超时或断连后关闭到 daemon 的 Unix Socket。Socket 断开后由 daemon 自动恢复。
 
 不能依赖 JavaScript 的退出回调作为唯一恢复机制。
 

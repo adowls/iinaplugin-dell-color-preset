@@ -1,7 +1,10 @@
 // One global instance owns one watcher/session, even when IINA has several player windows.
 const helperPath = iina.utils.resolvePath("@data/bin/display-helper");
-const heartbeatPath = "@data/watcher.heartbeat";
 const helperTempPath = `${helperPath}.new`;
+const heartbeatToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+const heartbeatPorts = Array.from({ length: 32 }, (_, index) => 43120 + index);
+let heartbeatPortIndex = 0;
+let watcherStarted = false;
 
 function validateProfilesDocument(document) {
   if (!document || document.schemaVersion !== 1 || !Array.isArray(document.profiles) || document.profiles.length === 0) {
@@ -66,6 +69,8 @@ async function installBundledHelper() {
   const dataBin = iina.utils.resolvePath("@data/bin");
   const mkdir = await iina.utils.exec("/bin/mkdir", ["-p", dataBin]);
   if (mkdir.status !== 0) throw new Error(`Cannot create plugin data bin directory: ${mkdir.stderr}`);
+  const removeLegacyHeartbeat = await iina.utils.exec("/bin/rm", ["-f", iina.utils.resolvePath("@data/watcher.heartbeat")]);
+  if (removeLegacyHeartbeat.status !== 0) throw new Error(`Cannot remove legacy heartbeat file: ${removeLegacyHeartbeat.stderr}`);
   const removeStaleTemp = await iina.utils.exec("/bin/rm", ["-f", helperTempPath]);
   if (removeStaleTemp.status !== 0) throw new Error(`Cannot clear temporary helper file: ${removeStaleTemp.stderr}`);
   const createTemp = await iina.utils.exec("/usr/bin/touch", [helperTempPath]);
@@ -86,19 +91,10 @@ async function installBundledHelper() {
   iina.file.write("@data/bin/profiles.json", profilesJSON);
 }
 
-async function startWatcher() {
-  try {
-    await installBundledHelper();
-  } catch (error) {
-    iina.console.error(`[Dell Color Preset] Native helper installation failed: ${error}`);
-    return;
-  }
-
-  const heartbeat = () => iina.file.write(heartbeatPath, String(Date.now()));
-  heartbeat();
-  setInterval(heartbeat, 500);
-  iina.console.log("[Dell Color Preset] Starting native display watcher.");
-  iina.utils.exec(helperPath, ["watch", iina.utils.resolvePath(heartbeatPath)], undefined, undefined, (data) => {
+function launchNativeWatcher(port) {
+  watcherStarted = true;
+  iina.console.log(`[Dell Color Preset] Starting native display watcher on heartbeat socket port ${port}.`);
+  iina.utils.exec(helperPath, ["watch", String(port), heartbeatToken], undefined, undefined, (data) => {
     if (data) iina.console.error(`[Dell Color Preset] ${data.trim()}`);
   }).then(({ status, stderr }) => {
     if (status !== 0) {
@@ -111,4 +107,52 @@ async function startWatcher() {
   });
 }
 
-startWatcher();
+function startHeartbeatServer() {
+  const port = heartbeatPorts[heartbeatPortIndex];
+  if (port === undefined) {
+    iina.console.error("[Dell Color Preset] Cannot start heartbeat socket server: no available local port.");
+    return;
+  }
+  try {
+    iina.ws.createServer({ port });
+    iina.ws.startServer();
+  } catch (error) {
+    iina.console.error(`[Dell Color Preset] Cannot create heartbeat socket on port ${port}: ${error}`);
+    heartbeatPortIndex += 1;
+    startHeartbeatServer();
+  }
+}
+
+iina.ws.onStateUpdate((state, error) => {
+  if (state === "ready" && !watcherStarted) {
+    launchNativeWatcher(heartbeatPorts[heartbeatPortIndex]);
+  } else if (state === "failed" && !watcherStarted) {
+    iina.console.error(`[Dell Color Preset] Heartbeat socket port ${heartbeatPorts[heartbeatPortIndex]} unavailable: ${error?.message || "unknown error"}`);
+    heartbeatPortIndex += 1;
+    startHeartbeatServer();
+  }
+});
+
+iina.ws.onMessage((connection, message) => {
+  let ping;
+  try {
+    ping = JSON.parse(message.text());
+  } catch (_) {
+    return;
+  }
+  if (!ping || ping.type !== "PING" || ping.token !== heartbeatToken || !Number.isInteger(ping.sequence)) return;
+  iina.ws.sendText(connection, JSON.stringify({ type: "PONG", token: heartbeatToken, sequence: ping.sequence }))
+    .catch((error) => iina.console.error(`[Dell Color Preset] Heartbeat socket response failed: ${error}`));
+});
+
+async function initializePlugin() {
+  try {
+    await installBundledHelper();
+  } catch (error) {
+    iina.console.error(`[Dell Color Preset] Native helper installation failed: ${error}`);
+    return;
+  }
+  startHeartbeatServer();
+}
+
+initializePlugin();

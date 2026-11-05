@@ -11,7 +11,6 @@
 #import <fcntl.h>
 #import <signal.h>
 #import <stdlib.h>
-#import <sys/stat.h>
 #import <time.h>
 
 static BOOL SendLine(int fd, NSDictionary *message, NSDictionary **response) {
@@ -92,7 +91,43 @@ static BOOL StartDaemon(NSString *helperPath) {
     _exit(127);
 }
 
-BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, NSString *heartbeatPath, NSError **error) {
+static BOOL WaitForSemaphore(dispatch_semaphore_t semaphore, NSTimeInterval timeout) {
+    return dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC))) == 0;
+}
+
+static BOOL SendPluginHeartbeat(NSURLSessionWebSocketTask *task, NSString *token, NSUInteger sequence, NSTimeInterval timeout) {
+    NSDictionary *ping = @{ @"type": @"PING", @"token": token, @"sequence": @(sequence) };
+    NSData *json = [NSJSONSerialization dataWithJSONObject:ping options:0 error:nil];
+    if (!json) return NO;
+    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+
+    dispatch_semaphore_t sent = dispatch_semaphore_create(0);
+    __block NSError *sendError = nil;
+    [task sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:text]
+    completionHandler:^(NSError *error) {
+        sendError = error;
+        dispatch_semaphore_signal(sent);
+    }];
+    if (!WaitForSemaphore(sent, timeout) || sendError) return NO;
+
+    dispatch_semaphore_t received = dispatch_semaphore_create(0);
+    __block NSURLSessionWebSocketMessage *reply = nil;
+    __block NSError *receiveError = nil;
+    [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
+        reply = message;
+        receiveError = error;
+        dispatch_semaphore_signal(received);
+    }];
+    if (!WaitForSemaphore(received, timeout) || receiveError || !reply.string) return NO;
+    NSData *replyData = [reply.string dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *response = [NSJSONSerialization JSONObjectWithData:replyData options:0 error:nil];
+    return [response isKindOfClass:NSDictionary.class] &&
+           [response[@"type"] isEqual:@"PONG"] &&
+           [response[@"token"] isEqual:token] &&
+           [response[@"sequence"] isEqual:@(sequence)];
+}
+
+BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t heartbeatPort, NSString *heartbeatToken, NSError **error) {
     if (!StartDaemon(helperPath)) {
         if (error) *error = [NSError errorWithDomain:@"DisplayWatcher" code:errno userInfo:@{NSLocalizedDescriptionKey: @"Unable to launch display daemon"}];
         return NO;
@@ -114,15 +149,31 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, NSString *hea
     if (fd < 0) { if (error) *error = [NSError errorWithDomain:@"DisplayWatcher" code:ECONNREFUSED userInfo:@{NSLocalizedDescriptionKey: @"Unable to connect to display daemon"}]; return NO; }
     NSDictionary *reply = nil;
     if (!SendLine(fd, @{ @"type": @"HELLO", @"requestId": @1 }, &reply) || ![reply[@"success"] boolValue]) { close(fd); return NO; }
+
+    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    configuration.URLCache = nil;
+    configuration.HTTPCookieStorage = nil;
+    NSURLSession *heartbeatSession = [NSURLSession sessionWithConfiguration:configuration];
+    NSURL *heartbeatURL = [NSURL URLWithString:[NSString stringWithFormat:@"ws://127.0.0.1:%u/", heartbeatPort]];
+    NSURLSessionWebSocketTask *heartbeatTask = [heartbeatSession webSocketTaskWithURL:heartbeatURL];
+    [heartbeatTask resume];
+
     NSString *lastObserved = @"__initial__";
     BOOL lastRequestSucceeded = NO;
     time_t retryAfter = 0;
     NSUInteger requestID = 2;
+    NSUInteger heartbeatSequence = 1;
+    time_t nextHeartbeat = 0;
     pid_t parentPID = getppid();
     while (kill(parentPID, 0) == 0) {
-        struct stat heartbeatInfo;
-        if (stat(heartbeatPath.fileSystemRepresentation, &heartbeatInfo) != 0 ||
-            time(NULL) - heartbeatInfo.st_mtime > 3) break;
+        time_t now = time(NULL);
+        if (now >= nextHeartbeat) {
+            if (!SendPluginHeartbeat(heartbeatTask, heartbeatToken, heartbeatSequence++, 3.0)) {
+                fprintf(stderr, "[ERROR] Plugin heartbeat socket timed out or disconnected\n");
+                break;
+            }
+            nextHeartbeat = time(NULL) + 1;
+        }
         @autoreleasepool {
             NSString *identity = TargetIdentityForFrontmostIINAWindow();
             NSString *normalized = identity ?: @"";
@@ -147,6 +198,8 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, NSString *hea
         }
         usleep(500000);
     }
+    [heartbeatTask cancel];
+    [heartbeatSession invalidateAndCancel];
     close(fd); // The daemon restores managed displays when this session ends.
     return YES;
 }

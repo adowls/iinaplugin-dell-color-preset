@@ -96,10 +96,16 @@ int main(int argc, const char *argv[]) {
             }
             return 0;
         }
-        if ([command isEqualToString:@"watch"] && (argc == 2 || argc == 3)) {
+        if ([command isEqualToString:@"watch"] && argc == 4) {
+            char *end = NULL;
+            unsigned long port = strtoul(argv[2], &end, 10);
+            if (!end || *end || port == 0 || port > UINT16_MAX) {
+                fprintf(stderr, "watch requires a valid WebSocket port and token\n");
+                return 2;
+            }
             NSError *error = nil;
-            NSString *heartbeatPath = argc == 3 ? [NSString stringWithUTF8String:argv[2]] : @"";
-            if (!RunDisplayWatcher([NSString stringWithUTF8String:argv[0]], DefaultDisplaySocketPath(), heartbeatPath, &error)) {
+            NSString *heartbeatToken = [NSString stringWithUTF8String:argv[3]];
+            if (!RunDisplayWatcher([NSString stringWithUTF8String:argv[0]], DefaultDisplaySocketPath(), (uint16_t)port, heartbeatToken, &error)) {
                 fprintf(stderr, "watcher failed: %s\n", error.localizedDescription.UTF8String);
                 return 1;
             }

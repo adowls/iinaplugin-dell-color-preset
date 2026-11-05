@@ -1,0 +1,16 @@
+{
+  "name": "Dell Display Color Preset",
+  "identifier": "com.adowls.iinaplugin.dell-color-preset",
+  "version": "0.1.1",
+  "ghRepo": "adowls/iinaplugin-dell-color-preset",
+  "ghVersion": 1,
+  "author": {
+    "name": "ado"
+  },
+  "description": "Switches supported Dell displays to Movie while an IINA window is on them.",
+  "entry": "entry.js",
+  "globalEntry": "main.js",
+  "permissions": [
+    "file-system"
+  ]
+}

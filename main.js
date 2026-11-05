@@ -1,11 +1,19 @@
 // One global instance owns one watcher/session, even when IINA has several player windows.
-const helperPayload = require("./helperPayload.js");
-const profilesPayload = require("./profilesPayload.js");
 const helperPath = iina.utils.resolvePath("@data/bin/display-helper");
 const heartbeatPath = "@data/watcher.heartbeat";
 const helperTempPath = `${helperPath}.new`;
 
-iina.console.log(`[Dell Color Preset] Plugin data directory: ${iina.utils.resolvePath("@data")}`);
+iina.console.log(`[Dell Color Preset] Global entry loaded; data directory: ${iina.utils.resolvePath("@data")}`);
+
+let helperPayload;
+let profilesPayload;
+try {
+  helperPayload = require("./helperPayload.js");
+  profilesPayload = require("./profilesPayload.js");
+} catch (error) {
+  iina.console.error(`[Dell Color Preset] Cannot load bundled resources: ${error}`);
+  throw error;
+}
 
 async function installBundledHelper() {
   const dataBin = iina.utils.resolvePath("@data/bin");
@@ -16,7 +24,7 @@ async function installBundledHelper() {
 
   const handle = iina.file.handle(helperTempPath, "write");
   try {
-    handle.write(helperPayload);
+    for (const chunk of helperPayload) handle.write(chunk);
   } finally {
     handle.close();
   }

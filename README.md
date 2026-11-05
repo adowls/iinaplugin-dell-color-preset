@@ -20,7 +20,7 @@ make -C native clean plugin
 
 1. 编译 `native/` 中的 Objective-C 源码，生成 `native/build/display-helper`。
 2. 从 `native/Profile/profiles.json` 读取 Profile 配置。
-3. 将 helper 和 Profile 编码为仓库根目录的 `helperPayload.js`、`profilesPayload.js`。
+3. 将 helper 分块编码为仓库根目录的 `helperPayload.js`，并将 Profile 编码为 `profilesPayload.js`。helper 分块避免 JavaScriptCore 解析单个超大数组字面量时失败。
 4. 组装 `native/build/DellColorPreset.iinaplugin/`，供本机开发或用 IINA CLI 打包。
 
 IINA 不会替插件编译 `native/` 源码。**每次修改 native 代码或 Profile 后，都要重新执行构建，并将生成的两个 payload 和源码一起提交**；否则从 GitHub 安装的用户会得到旧的 helper 或 Profile。`native/build/` 属于本地构建目录，不需要提交。

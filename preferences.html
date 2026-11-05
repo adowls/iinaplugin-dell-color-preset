@@ -29,6 +29,7 @@
       A profile with <code>verified: true</code> may be used for automatic DDC writes.
     </p>
     <textarea id="profiles" spellcheck="false" aria-label="Profiles JSON"></textarea>
+    <input id="profiles-pref" type="text" data-pref-key="profiles_json" hidden>
     <div class="actions">
       <button id="save" type="button">Save</button>
       <button id="defaults" type="button">Restore bundled defaults</button>
@@ -41,8 +42,17 @@
       const editor = document.getElementById("profiles");
       const status = document.getElementById("status");
       const prefs = window.iina.preferences;
-      let bundledProfiles = "";
+      const DEFAULTS = {
+        schemaVersion: 1,
+        profiles: [
+          { model: "U2723QE", vendorID: 4268, productID: 17005, featureCode: 220, movieValue: 3, verified: true },
+          { model: "U2725QE", vendorID: 4268, productID: 17259, featureCode: 220, movieValue: 3, verified: true }
+        ]
+      };
+      let bundledProfiles = JSON.stringify(DEFAULTS, null, 2);
       let currentProfiles = "";
+      let editorEdited = false;
+      const boundPreference = document.getElementById("profiles-pref");
 
       function validate(document) {
         if (!document || document.schemaVersion !== 1 || !Array.isArray(document.profiles) || document.profiles.length === 0) {
@@ -65,9 +75,11 @@
       }
 
       function loadEditor() {
-        let text = typeof currentProfiles === "string" && currentProfiles.trim()
-          ? currentProfiles
-          : bundledProfiles;
+        if (editorEdited) return;
+        const boundValue = boundPreference.value;
+        let text = boundValue && boundValue.trim()
+          ? boundValue
+          : (currentProfiles && currentProfiles.trim() ? currentProfiles : bundledProfiles);
         try {
           validate(JSON.parse(text));
         } catch (_) {
@@ -77,19 +89,23 @@
       }
 
       prefs.get("bundled_profiles_json", (value) => {
-        bundledProfiles = typeof value === "string" && value.trim() ? value : "";
-        if (bundledProfiles) loadEditor();
+        if (typeof value === "string" && value.trim()) bundledProfiles = value;
+        loadEditor();
       });
       prefs.get(key, (value) => {
         currentProfiles = typeof value === "string" ? value : "";
         loadEditor();
       });
+      setTimeout(loadEditor, 250);
+      editor.addEventListener("input", () => { editorEdited = true; });
 
       document.getElementById("save").addEventListener("click", () => {
         try {
           validate(JSON.parse(editor.value));
           prefs.set(key, editor.value);
           prefs.sync();
+          boundPreference.value = editor.value;
+          boundPreference.dispatchEvent(new Event("change", { bubbles: true }));
           status.textContent = "Saved. Fully quit and restart IINA to apply these profiles.";
           status.className = "small";
         } catch (error) {
@@ -99,11 +115,6 @@
       });
 
       document.getElementById("defaults").addEventListener("click", () => {
-        if (!bundledProfiles) {
-          status.textContent = "Bundled defaults are not available yet. Close and reopen this settings page.";
-          status.className = "small";
-          return;
-        }
         editor.value = bundledProfiles;
         status.textContent = "Defaults loaded in the editor. Click Save to store them.";
         status.className = "small secondary";

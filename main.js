@@ -12,7 +12,7 @@ const helperPath = iina.utils.resolvePath("@data/bin/display-helper");
 const heartbeatPath = "@data/watcher.heartbeat";
 const helperTempPath = `${helperPath}.new`;
 
-iina.console.log(`[Dell Color Preset] Global entry loaded; data directory: ${iina.utils.resolvePath("@data")}`);
+iina.console.log(`[Dell Color Preset] Global entry loaded; data directory: ${iina.utils.resolvePath("@data/")}`);
 startupTrace("global entry APIs initialized");
 
 let helperPayload;

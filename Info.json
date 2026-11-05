@@ -1,9 +1,9 @@
 {
   "name": "Dell Display Color Preset",
   "identifier": "com.adowls.iinaplugin.dell-color-preset",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "ghRepo": "adowls/iinaplugin-dell-color-preset",
-  "ghVersion": 3,
+  "ghVersion": 4,
   "author": {
     "name": "ado"
   },

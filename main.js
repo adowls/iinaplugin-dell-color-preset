@@ -34,6 +34,8 @@ async function installBundledHelper() {
   startupTrace("data bin directory created");
   const removeStaleTemp = await iina.utils.exec("/bin/rm", ["-f", helperTempPath]);
   if (removeStaleTemp.status !== 0) throw new Error(`Cannot clear temporary helper file: ${removeStaleTemp.stderr}`);
+  const createTemp = await iina.utils.exec("/usr/bin/touch", [helperTempPath]);
+  if (createTemp.status !== 0) throw new Error(`Cannot create temporary helper file: ${createTemp.stderr}`);
 
   const handle = iina.file.handle(helperTempPath, "write");
   try {

@@ -52,7 +52,7 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 
 ### 编辑 Display Profiles
 
-在 IINA 的 **Settings → Plugins → Dell Display Color Preset → Preferences** 中编辑 `profiles.json` 内容并保存。设置页会校验 JSON 结构、字段类型、数值范围和重复 Profile。保存后需要完全退出并重新启动 IINA；下次启动时，插件会把已保存配置写入 `@data/bin/profiles.json`，helper 随后加载它。若保存内容无效，插件会使用仓库内置默认 Profile 并在 IINA 日志中报告错误。
+在 IINA 的 **Settings → Plugins → Dell Display Color Preset → Preferences** 中查看和编辑 `profiles.json` 内容。**Restore bundled defaults** 会将 U2723QE 和 U2725QE 的内置配置载入编辑框；点击 **Save** 后保存。设置页会校验 JSON 结构、字段类型、数值范围和重复 Profile。Profile 在 helper 启动时加载，所以保存或恢复默认值后都要完全退出并重新启动 IINA 才会生效。若配置无效，插件会回退到内置默认 Profile 并在 IINA 日志中报告错误。
 
 ## Native Helper 手动调试
 

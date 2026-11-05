@@ -1,9 +1,11 @@
 ---
 created: 2026-11-04T18:29:19+08:00
-updated: 2026-11-04T18:29:46+08:00
+updated: 2026-11-05T11:20:00+08:00
 ---
 
 # 1. IINA Dell Display Color Preset Automation
+
+> **实现状态（2026-11-05）**：本文件最初是实现前的设计方案，以下部分条目仍保留历史规划语境。仓库当前实现已支持 Dell U2723QE（Product ID `0x426D`）和 U2725QE（Product ID `0x436B`），两者 Movie VCP 值均为 `0x03`，且已在用户实机验证。当前 Profile 可在 IINA 插件 Preferences 页面编辑；GitHub 发布仓库提交 `helperPayload.js` 和 `profilesPayload.js`，IINA 安装时不会替插件编译 Objective-C 源码。构建与安装步骤以同目录 `README.md` 为准。
 
 ## 1.1. 技术设计方案（Technical Design Specification）
 
@@ -104,7 +106,7 @@ Dell U2723QE：
 
 - 不得假设其他 Dell 型号使用相同编码。
 
-- U2725QE 尚未完成验证，暂不允许自动修改。
+- U2725QE 已在实机验证：Movie 值为 `0x03`，可使用同一 VCP `0xDC` 设置。
 
 ## 3.3. 显示器身份识别
 
@@ -505,7 +507,7 @@ set(displayIdentity, featureCode, value)
 
 ## 6.2. 初始配置
 
-当前仅配置已经实测确认的 U2723QE：
+当前内置配置包含已经实测确认的 U2723QE 和 U2725QE：
 
 ```
 Model: U2723QE
@@ -521,10 +523,13 @@ Standard 的值不作为固定恢复值，而是从显示器实际读取。
 U2725QE：
 
 ```
-Verified: NO
+Model: U2725QE
+Vendor: 0x10AC
+Product: 0x436B
+Feature: 0xDC
+Movie Value: 0x03
+Verified: YES
 ```
-
-不执行自动写入。
 
 ## 6.3. Profile 匹配规则
 
@@ -1240,63 +1245,23 @@ display-helper status
 
 ```
 IINA-Dell-Color-Preset/
-│
 ├── README.md
-├── LICENSE
-│
-├── plugin/
-│   ├── Info.json
-│   ├── main.js
-│   ├── WindowMonitor.js
-│   ├── DisplayResolver.js
-│   └── NativeHelperManager.js
-│
-├── native/
-│   ├── Makefile
-│   │
-│   ├── main.m
-│   │
-│   ├── CLI/
-│   │   ├── CommandParser.h
-│   │   └── CommandParser.m
-│   │
-│   ├── Daemon/
-│   │   ├── Daemon.h
-│   │   ├── Daemon.m
-│   │   ├── SocketServer.h
-│   │   ├── SocketServer.m
-│   │   ├── SessionManager.h
-│   │   ├── SessionManager.m
-│   │   ├── StateManager.h
-│   │   └── StateManager.m
-│   │
-│   ├── Display/
-│   │   ├── DisplayInfo.h
-│   │   ├── DisplayInfo.m
-│   │   ├── DisplayIdentity.h
-│   │   ├── DisplayIdentity.m
-│   │   ├── DisplayDiscovery.h
-│   │   └── DisplayDiscovery.m
-│   │
-│   ├── DDC/
-│   │   ├── DDCBackend.h
-│   │   ├── DDCBackend.m
-│   │   ├── DDCTransport.h
-│   │   ├── DDCTransport.m
-│   │   ├── DDCProtocol.h
-│   │   └── DDCProtocol.m
-│   │
-│   └── Profile/
-│       ├── DisplayProfile.h
-│       ├── DisplayProfile.m
-│       └── profiles.json
-│
-└── tests/
-    ├── test_ddc_protocol.m
-    ├── test_display_identity.m
-    ├── test_state_manager.m
-    ├── test_socket_protocol.m
-    └── test_profile.m
+├── Info.json
+├── entry.js
+├── main.js
+├── preferences.html
+├── helperPayload.js       # 构建生成，提交供 GitHub 安装使用
+├── profilesPayload.js     # 构建生成，提交供 GitHub 安装使用
+└── native/                # Objective-C 源码与 profiles.json
+    ├── Makefile
+    ├── main.m
+    ├── DisplayDiscovery.*
+    ├── DisplayProfile.*
+    ├── Daemon/
+    ├── DDC/
+    ├── Profile/profiles.json
+    └── build/              # 本地生成目录，不提交
+
 ```
 
 以上是逻辑模块划分，不要求机械地为每个类建立独立文件。Coding LLM 可以根据实际实现复杂度合并文件。
@@ -1309,35 +1274,13 @@ IINA-Dell-Color-Preset/
 
 不使用 Swift 或 SwiftPM。
 
-Makefile 示例：
+仓库实际构建命令：
 
-```
-CC = clang
-
-CFLAGS = -Wall -Wextra -O2 \
-         -fobjc-arc \
-         -mmacosx-version-min=13.0
-
-FRAMEWORKS = \
-    -framework Foundation \
-    -framework IOKit \
-    -framework CoreGraphics \
-    -framework CoreDisplay
-
-SOURCES = $(shell find . -name '*.m')
-
-TARGET = display-helper
-
-all:
-	$(CC) $(CFLAGS) $(SOURCES) \
-	    $(FRAMEWORKS) \
-	    -o $(TARGET)
-
-clean:
-	rm -f $(TARGET)
+```sh
+make -C native clean plugin
 ```
 
-这是初始示意，实际链接参数应根据复用的 m1ddc 源码和私有 API 符号解析方式调整。
+该命令编译 Native Helper，并生成 IINA 从 GitHub 安装时使用的内嵌资源 payload。IINA 本身不会执行该构建命令。
 
 注意：
 
@@ -1426,7 +1369,7 @@ display-helper set <identity> 0xDC <original-value>
 
 - 加入 U2723QE 已验证配置。
 
-- 将 U2725QE 标记为未验证。
+- 加入 U2725QE 已验证配置（Vendor `0x10AC`、Product `0x436B`、Movie `0x03`）。
 
 - 未知型号禁止写入。
 
@@ -1435,7 +1378,7 @@ display-helper set <identity> 0xDC <original-value>
 
 - U2723QE 能正确匹配。
 
-- U2725QE 不执行自动切换。
+- U2725QE 能正确匹配并切换 Movie。
 
 - 未知显示器不执行写操作。
 
@@ -1544,7 +1487,7 @@ display-helper set <identity> 0xDC <original-value>
 |IINA 从 A 移到 B|A 恢复，B 切 Movie|
 |IINA 从 B 移回 A|B 恢复，A 切 Movie|
 |IINA 位于内置屏幕|所有接管屏恢复|
-|IINA 位于 U2725QE|不操作未验证型号|
+|IINA 位于 U2725QE|切换 Movie|
 |原始模式已经是 Movie|不修改|
 |原始模式为 Standard|退出时恢复 Standard|
 |原始模式为其他 Preset|退出时恢复原始值|
@@ -1598,12 +1541,12 @@ Coding LLM 必须遵守以下原则：
 |---|---|---|
 |U2723QE Movie 编码|已验证|使用 0xDC=0x03|
 |U2723QE Standard 编码|已验证|仅作为测试参考|
-|U2725QE Movie 编码|未验证|暂不启用|
-|DDC 通用 Get|源码已有实现，尚需增强验证|Phase 2 实测|
-|DCPAVServiceProxy|m1ddc 已有实现|复用并验证|
-|私有 API 兼容性|存在系统版本风险|动态解析并检测|
-|窗口标题栏归属检测|需要确认 IINA API 能力|Phase 6 验证|
-|插件与 helper 生命周期|需要集成测试|Phase 5/6|
+|U2725QE Movie 编码|已实机验证|使用 0xDC=0x03|
+|DDC 通用 Get|已实现，运行时先读取并在写入后回读|遇到具体机型或系统问题时复测|
+|DCPAVServiceProxy|已集成到 DDC Backend|随 macOS 私有 API 变化维护|
+|私有 API 兼容性|依赖 CoreDisplay 私有接口|系统升级后复测|
+|窗口标题栏归属检测|已实现，按窗口顶部区域判定所在显示器|IINA/macOS 行为变化时复测|
+|插件与 helper 生命周期|已实现启动、心跳监控和会话结束恢复|后续版本持续验证|
 |daemon 崩溃恢复|不保证|纯内存方案的已知限制|
 
 ---
@@ -1618,11 +1561,11 @@ Coding LLM 必须遵守以下原则：
 
 4. Daemon。
 
-5. U2723QE Display Profile。
+5. U2723QE 与 U2725QE Display Profiles。
 
 6. DDC Backend。
 
-7. 自动化测试。
+7. 手动构建与实机运行验证（仓库当前不包含独立自动化测试套件）。
 
 8. Makefile。
 

@@ -80,12 +80,29 @@ static NSDictionary<NSString *, id> *CandidateRow(NSDictionary *candidate) {
         @"windowID": candidate[@"windowID"] ?: NSNull.null,
         @"layer": candidate[@"layer"] ?: NSNull.null,
         @"onscreen": candidate[@"onscreen"] ?: @NO,
+        @"fullscreenSized": candidate[@"fullscreen"] ?: @NO,
+        @"visible": candidate[@"visible"] ?: @NO,
         @"alpha": candidate[@"alpha"] ?: @1,
         @"bounds": @{
             @"x": @(frame.origin.x), @"y": @(frame.origin.y),
             @"width": @(frame.size.width), @"height": @(frame.size.height)
         }
     };
+}
+
+// The player window keeps its CGWindowNumber across Space switches. Tracking
+// it stops background-Space auxiliary panels (playlist, OSC) that remain
+// onscreen on another display from stealing the target while the player
+// window itself sits in a background Space.
+static NSNumber *TrackedMainWindowID = nil;
+
+static BOOL FrameMatchesADisplay(CGRect frame, NSArray<NSNumber *> *displayIDs) {
+    for (NSNumber *value in displayIDs) {
+        CGRect bounds = CGDisplayBounds(value.unsignedIntValue);
+        if (fabs(frame.origin.x - bounds.origin.x) < 2 && fabs(frame.origin.y - bounds.origin.y) < 2 &&
+            fabs(frame.size.width - bounds.size.width) < 2 && fabs(frame.size.height - bounds.size.height) < 2) return YES;
+    }
+    return NO;
 }
 
 NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
@@ -114,14 +131,18 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
     NSArray *windows = CFBridgingRelease(windowList);
     diagnosis[@"windowCount"] = @(windows.count);
 
+    NSArray<NSNumber *> *displayIDs = ActiveDisplayIDs();
+    if (!displayIDs.count) { diagnosis[@"reason"] = @"No active displays"; return diagnosis; }
+
     NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
     for (NSDictionary *window in windows) {
         if (![pids containsObject:window[(id)kCGWindowOwnerPID]]) continue;
         NSNumber *layerValue = window[(id)kCGWindowLayer];
         if (![layerValue isKindOfClass:NSNumber.class]) continue;
         NSInteger layer = layerValue.integerValue;
-        // Exclude desktop/backdrop windows and IINA's high-level black-out helpers.
-        if (layer < 0 || layer > 1000) continue;
+        // Exclude desktop/backdrop windows and IINA's high-level black-out
+        // helpers (its own blackout windows live at mainMenu + 1 = 25).
+        if (layer < 0 || layer > 1000 || layer == NSMainMenuWindowLevel + 1) continue;
         NSNumber *alphaValue = window[(id)kCGWindowAlpha];
         double alpha = [alphaValue isKindOfClass:NSNumber.class] ? alphaValue.doubleValue : 1.0;
         if (alpha < 0.05) continue;
@@ -131,21 +152,28 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
         // first entry of optionAll would otherwise pick a hidden 500x500 window
         // or a transparent 2560x32 strip above the screen.
         if (frame.size.width < 200 || frame.size.height < 150) continue;
+        BOOL onscreen = [window[(id)kCGWindowIsOnscreen] boolValue];
+        // Native fullscreen Space windows never carry kCGWindowIsOnscreen, even
+        // while their Space is active on that display, so a window whose frame
+        // exactly matches a display's bounds counts as visible too. Anything
+        // else without the onscreen flag sits in a background Space.
+        BOOL fullscreenSized = FrameMatchesADisplay(frame, displayIDs);
         [candidates addObject:@{
             @"windowID": window[(id)kCGWindowNumber] ?: NSNull.null,
             @"layer": layerValue,
-            @"onscreen": @([window[(id)kCGWindowIsOnscreen] boolValue]),
+            @"onscreen": @(onscreen),
+            @"fullscreen": @(fullscreenSized),
+            @"visible": @(onscreen || fullscreenSized),
             @"alpha": alphaValue ?: @1,
             @"_frame": [NSValue valueWithRect:frame]
         }];
     }
 
-    // Prefer a currently onscreen window, then a normal-level window, then the
-    // largest one. The fullscreen player window is the largest layer-0 window
-    // and has no kCGWindowIsOnscreen key while it lives in its own Space.
+    // Prefer a currently visible window, then a normal-level window, then the
+    // largest one.
     [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        BOOL oa = [a[@"onscreen"] boolValue], ob = [b[@"onscreen"] boolValue];
-        if (oa != ob) return oa ? NSOrderedAscending : NSOrderedDescending;
+        BOOL va = [a[@"visible"] boolValue], vb = [b[@"visible"] boolValue];
+        if (va != vb) return va ? NSOrderedAscending : NSOrderedDescending;
         NSInteger la = [a[@"layer"] integerValue], lb = [b[@"layer"] integerValue];
         if (la != lb) return la < lb ? NSOrderedAscending : NSOrderedDescending;
         CGRect fa = [a[@"_frame"] rectValue], fb = [b[@"_frame"] rectValue];
@@ -158,47 +186,98 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
     diagnosis[@"candidateCount"] = @(candidates.count);
     diagnosis[@"candidates"] = rows;
 
-    NSArray<NSNumber *> *displayIDs = ActiveDisplayIDs();
-    if (!displayIDs.count) { diagnosis[@"reason"] = @"No active displays"; return diagnosis; }
-
-    CGDirectDisplayID selected = kCGNullDirectDisplay;
-    NSDictionary<NSString *, id> *selectedRow = nil;
-    NSString *assignment = nil;
-    for (NSDictionary *candidate in candidates) {
-        CGRect frame = [candidate[@"_frame"] rectValue];
-        // Windowed: the top 32pt titlebar band decides which screen owns the
-        // window. Fullscreen: there is no titlebar, so fall back to the whole
-        // frame and finally to the window centre point.
-        CGRect titlebar = CGRectMake(frame.origin.x, frame.origin.y,
-                                     frame.size.width, MIN(32.0, frame.size.height));
-        selected = DisplayForRect(titlebar, displayIDs);
-        assignment = @"titlebar";
-        if (selected == kCGNullDirectDisplay) {
-            selected = DisplayForRect(frame, displayIDs);
-            assignment = @"fullFrame";
-        }
-        if (selected == kCGNullDirectDisplay) {
-            CGPoint centre = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
-            for (NSNumber *value in displayIDs) {
-                if (CGRectContainsPoint(CGDisplayBounds(value.unsignedIntValue), centre)) {
-                    selected = value.unsignedIntValue;
-                    assignment = @"centrePoint";
-                    break;
-                }
+    // Stick to the tracked player window: auxiliary panels must never win
+    // while the player window still exists somewhere, even if it is currently
+    // on a background Space. The only exceptions are a window that is clearly
+    // more authoritative: a fullscreen-sized window (auxiliary panels are
+    // never fullscreen-sized) or one at least 1.5x larger in area, which is
+    // what happens when the player window opens after only the playlist was
+    // visible.
+    NSDictionary<NSString *, id> *trackedCandidate = nil;
+    if (TrackedMainWindowID) {
+        for (NSDictionary *candidate in candidates) {
+            if ([candidate[@"windowID"] isKindOfClass:NSNumber.class] &&
+                [candidate[@"windowID"] isEqualToNumber:TrackedMainWindowID]) {
+                trackedCandidate = candidate;
+                break;
             }
         }
-        if (selected == kCGNullDirectDisplay) continue;
-        selectedRow = CandidateRow(candidate);
-        break; // The first assignable candidate is the player window.
     }
-    if (selected == kCGNullDirectDisplay) {
-        diagnosis[@"reason"] = candidates.count
-            ? @"No candidate window could be assigned to a display"
-            : @"No IINA player window found";
+    NSDictionary<NSString *, id> *bestCandidate = candidates.firstObject; // Sorted: visible, layer, area.
+    BOOL replaceTracked = NO;
+    if (trackedCandidate && bestCandidate && bestCandidate != trackedCandidate) {
+        CGRect trackedFrame = [trackedCandidate[@"_frame"] rectValue];
+        CGRect bestFrame = [bestCandidate[@"_frame"] rectValue];
+        CGFloat trackedArea = trackedFrame.size.width * trackedFrame.size.height;
+        CGFloat bestArea = bestFrame.size.width * bestFrame.size.height;
+        BOOL bestFullscreen = [bestCandidate[@"fullscreen"] boolValue];
+        BOOL trackedFullscreen = [trackedCandidate[@"fullscreen"] boolValue];
+        if (bestFullscreen && !trackedFullscreen) {
+            replaceTracked = YES;
+        } else if ([bestCandidate[@"visible"] boolValue] && bestArea > trackedArea * 1.5) {
+            replaceTracked = YES;
+        }
+    }
+
+    NSDictionary<NSString *, id> *selectedCandidate = nil;
+    NSString *pickedBy = nil;
+    if (trackedCandidate && !replaceTracked) {
+        selectedCandidate = trackedCandidate;
+        pickedBy = @"trackedWindow";
+    } else if (candidates.count) {
+        selectedCandidate = bestCandidate;
+        pickedBy = trackedCandidate ? @"switchedToLargerWindow" : @"reEstablished";
+    }
+    if (selectedCandidate) {
+        diagnosis[@"pickedBy"] = pickedBy ?: @"none";
+        NSNumber *selectedID = selectedCandidate[@"windowID"];
+        if ([selectedID isKindOfClass:NSNumber.class]) TrackedMainWindowID = selectedID;
+        diagnosis[@"trackedWindowID"] = TrackedMainWindowID ?: NSNull.null;
+    } else {
+        diagnosis[@"pickedBy"] = @"none";
+        diagnosis[@"trackedWindowID"] = TrackedMainWindowID ?: NSNull.null;
+    }
+
+    if (!selectedCandidate) {
+        diagnosis[@"reason"] = @"No IINA player window found";
+        return diagnosis;
+    }
+    if (![selectedCandidate[@"visible"] boolValue]) {
+        diagnosis[@"selectedWindow"] = CandidateRow(selectedCandidate);
+        diagnosis[@"reason"] = @"Player window is on a background Space";
         return diagnosis;
     }
 
-    diagnosis[@"selectedWindow"] = selectedRow;
+    CGDirectDisplayID selected = kCGNullDirectDisplay;
+    NSString *assignment = nil;
+    CGRect frame = [selectedCandidate[@"_frame"] rectValue];
+    // Windowed: the top 32pt titlebar band decides which screen owns the
+    // window. Fullscreen: there is no titlebar, so fall back to the whole
+    // frame and finally to the window centre point.
+    CGRect titlebar = CGRectMake(frame.origin.x, frame.origin.y,
+                                 frame.size.width, MIN(32.0, frame.size.height));
+    selected = DisplayForRect(titlebar, displayIDs);
+    assignment = @"titlebar";
+    if (selected == kCGNullDirectDisplay) {
+        selected = DisplayForRect(frame, displayIDs);
+        assignment = @"fullFrame";
+    }
+    if (selected == kCGNullDirectDisplay) {
+        CGPoint centre = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+        for (NSNumber *value in displayIDs) {
+            if (CGRectContainsPoint(CGDisplayBounds(value.unsignedIntValue), centre)) {
+                selected = value.unsignedIntValue;
+                assignment = @"centrePoint";
+                break;
+            }
+        }
+    }
+    if (selected == kCGNullDirectDisplay) {
+        diagnosis[@"reason"] = @"Player window could not be assigned to a display";
+        return diagnosis;
+    }
+
+    diagnosis[@"selectedWindow"] = CandidateRow(selectedCandidate);
     diagnosis[@"displayID"] = @(selected);
     diagnosis[@"assignment"] = assignment;
     NSError *error = nil;

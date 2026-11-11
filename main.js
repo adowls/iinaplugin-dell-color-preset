@@ -145,6 +145,63 @@ iina.ws.onMessage((connection, message) => {
     .catch((error) => iina.console.error(`[Dell Color Preset] Heartbeat socket response failed: ${error}`));
 });
 
+// Black out every monitor except the one hosting IINA's player window. IINA
+// exposes no public API or key binding for its own blackOutOtherMonitors, so
+// a resident native helper draws borderless black windows instead, and the
+// plugin toggles it through a state file.
+const blackoutStatePath = iina.utils.resolvePath("@data/blackout.state");
+const blackoutPidPath = iina.utils.resolvePath("@data/blackout.pid");
+let blackoutEnabled = false;
+let blackoutMenuItem = null;
+
+function updateBlackoutMenuItem() {
+  if (!blackoutMenuItem) return;
+  blackoutMenuItem.title = blackoutEnabled
+    ? "Disable Black Out Other Monitors"
+    : "Black Out Other Monitors";
+  blackoutMenuItem.selected = blackoutEnabled;
+  iina.menu.forceUpdate();
+}
+
+function launchBlackoutHelper() {
+  // The helper exits immediately when another instance already owns the pid
+  // file, so launching on every enable is safe. The state file is polled by
+  // the resident helper every 500 ms.
+  iina.utils.exec(helperPath, ["blackout", blackoutStatePath, blackoutPidPath], undefined, undefined, (data) => {
+    if (data) iina.console.error(`[Dell Color Preset] ${data.trim()}`);
+  }).then(() => {
+    iina.console.log("[Dell Color Preset] Blackout helper stopped.");
+  }).catch((error) => {
+    iina.console.error(`[Dell Color Preset] Unable to start blackout helper: ${error}`);
+  });
+}
+
+function toggleBlackout() {
+  blackoutEnabled = !blackoutEnabled;
+  try {
+    iina.file.write("@data/blackout.state", blackoutEnabled ? "1" : "0");
+  } catch (error) {
+    blackoutEnabled = !blackoutEnabled;
+    iina.console.error(`[Dell Color Preset] Cannot write blackout state: ${error}`);
+    return;
+  }
+  if (blackoutEnabled) launchBlackoutHelper();
+  updateBlackoutMenuItem();
+  iina.console.log(`[Dell Color Preset] Black out other monitors: ${blackoutEnabled ? "on" : "off"}`);
+}
+
+function registerBlackoutControls() {
+  const storedKey = iina.preferences.get("blackout_hotkey");
+  const hotkey = typeof storedKey === "string" && storedKey.trim() ? storedKey.trim() : "Alt+Shift+b";
+  try {
+    blackoutMenuItem = iina.menu.item("Black Out Other Monitors", toggleBlackout, { keyBinding: hotkey });
+    iina.menu.addItem(blackoutMenuItem);
+    iina.console.log(`[Dell Color Preset] Black out menu item registered with key binding ${hotkey}.`);
+  } catch (error) {
+    iina.console.error(`[Dell Color Preset] Cannot register blackout menu item: ${error}`);
+  }
+}
+
 async function initializePlugin() {
   try {
     await installBundledHelper();
@@ -152,6 +209,14 @@ async function initializePlugin() {
     iina.console.error(`[Dell Color Preset] Native helper installation failed: ${error}`);
     return;
   }
+  // The blackout helper exits together with IINA, so every launch starts in
+  // the off state regardless of what a previous session left behind.
+  try {
+    iina.file.write("@data/blackout.state", "0");
+  } catch (_) {
+    // The state file is rewritten on the first toggle anyway.
+  }
+  registerBlackoutControls();
   startHeartbeatServer();
 }
 

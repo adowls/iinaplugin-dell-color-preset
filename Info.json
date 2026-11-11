@@ -1,9 +1,9 @@
 {
   "name": "Dell Display Color Preset",
   "identifier": "com.adowls.iinaplugin.dell-color-preset",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "ghRepo": "adowls/iinaplugin-dell-color-preset",
-  "ghVersion": 11,
+  "ghVersion": 12,
   "author": {
     "name": "ado"
   },
@@ -12,6 +12,7 @@
   "globalEntry": "main.js",
   "preferencesPage": "preferences.html",
   "preferenceDefaults": {
+    "blackout_hotkey": "Alt+Shift+b",
     "profiles_json": "{\"schemaVersion\":1,\"profiles\":[{\"model\":\"U2723QE\",\"vendorID\":4268,\"productID\":17005,\"featureCode\":220,\"movieValue\":3,\"verified\":true},{\"model\":\"U2725QE\",\"vendorID\":4268,\"productID\":17259,\"featureCode\":220,\"movieValue\":3,\"verified\":true}]}",
     "bundled_profiles_json": "{\"schemaVersion\":1,\"profiles\":[{\"model\":\"U2723QE\",\"vendorID\":4268,\"productID\":17005,\"featureCode\":220,\"movieValue\":3,\"verified\":true},{\"model\":\"U2725QE\",\"vendorID\":4268,\"productID\":17259,\"featureCode\":220,\"movieValue\":3,\"verified\":true}]}"
   },

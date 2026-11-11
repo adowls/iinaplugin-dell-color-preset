@@ -8,6 +8,7 @@
 #import "Daemon/DisplayStateManager.h"
 #import "Daemon/DisplaySocketServer.h"
 #import "Daemon/DisplayWatcher.h"
+#import "Daemon/DisplayBlackout.h"
 
 static BOOL ParseUnsigned(NSString *text, unsigned long long max, unsigned long long *value) {
     const char *input = text.UTF8String;
@@ -96,6 +97,11 @@ int main(int argc, const char *argv[]) {
             }
             return 0;
         }
+        if ([command isEqualToString:@"blackout"] && argc == 4) {
+            RunDisplayBlackout([NSString stringWithUTF8String:argv[2]],
+                               [NSString stringWithUTF8String:argv[3]]);
+            return 0;
+        }
         if ([command isEqualToString:@"probe"] && argc == 2) {
             NSDictionary *diagnosis = ResolveIINAWindowTarget();
             NSError *error = nil;
@@ -156,7 +162,7 @@ int main(int argc, const char *argv[]) {
                    argv[2], feature, value);
             return 0;
         }
-        fprintf(stderr, "Usage:\n  display-helper list\n  display-helper profiles\n  display-helper probe\n  display-helper get <identity> <feature>\n  display-helper set <identity> <feature> <value>\n  display-helper daemon [--socket <path>]\n  display-helper client [<socket-path>]\n");
+        fprintf(stderr, "Usage:\n  display-helper list\n  display-helper profiles\n  display-helper probe\n  display-helper blackout <state-path> <pid-path>\n  display-helper get <identity> <feature>\n  display-helper set <identity> <feature> <value>\n  display-helper daemon [--socket <path>]\n  display-helper client [<socket-path>]\n");
         return 2;
     }
 }

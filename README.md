@@ -50,7 +50,9 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 
 ### Black Out Other Monitors
 
-IINA 没有公开 `blackOutOtherMonitors` 的 JS API、菜单项或快捷键，所以插件自行实现等效功能：全局菜单 **Plugins → Dell Display Color Preset → Black Out Other Monitors** 会在除 IINA 播放窗口所在屏幕外的全部屏幕上显示无边框黑色窗口（layer 为 `mainMenu + 1`，与 IINA 自带黑屏一致，可压住全屏视频与菜单栏）。再点一次（或再按快捷键）即关闭。快捷键默认 `Alt+Shift+b`（mpv 键名格式），可在插件偏好页修改，修改后需重启 IINA；它只在 IINA 为当前活动应用时生效。播放窗口换屏时黑窗自动跟随；IINA 退出或插件会话结束时黑窗自动消失。该功能由独立常驻 helper 进程实现（`display-helper blackout <state> <pid>`），通过 `@data/blackout.state` 状态文件控制，pid 文件防止重复实例。
+IINA 没有公开 `blackOutOtherMonitors` 的 JS API、菜单项或快捷键，所以插件自行实现等效功能：全局菜单 **Plugins → Dell Display Color Preset → Black Out Other Monitors** 会在除 IINA 播放窗口所在屏幕外的全部屏幕上显示无边框黑色窗口（layer 为 `mainMenu + 1`，与 IINA 自带黑屏一致，可压住全屏视频与菜单栏）。再点一次（或再按快捷键）即关闭。快捷键默认 `Alt+Shift+b`（mpv 键名格式），可在插件偏好页修改，格式要求「修饰键 + 单个字符」，支持 `Ctrl`/`Alt`（或 `Option`）/`Shift`/`Cmd`（或 `Meta`）、不区分大小写；保存后约 2 秒内自动重建菜单项生效，**无需重启 IINA**。清空输入框即恢复默认 `Alt+Shift+b`；无法解析的输入（如裸字母、多字符按键）也会回退到默认值，避免单个字母抢占播放器按键。
+
+该快捷键基于菜单 key equivalent，只在 IINA 为当前活动应用时生效。**已知限制**：中文等输入法激活时，含 `Shift` 的组合可能先被输入法拦截而不触发，需要切回英文输入法；若经常在中文输入法下使用，建议改用 `Ctrl+Alt+b` 这类不含 Shift 的组合。播放窗口换屏时黑窗自动跟随；IINA 退出或插件会话结束时黑窗自动消失。该功能由独立常驻 helper 进程实现（`display-helper blackout <state> <pid>`），通过 `@data/blackout.state` 状态文件控制，pid 文件防止重复实例。
 
 卸载时，在 IINA 的插件设置中移除 **Dell Display Color Preset**。IINA 结束插件会话后 daemon 会恢复其接管的显示器。插件数据目录 `@data` 中的 helper 和 Profile 文件可随插件一并删除；daemon 运行目录位于 `~/Library/Application Support/IINA/plugins/dell-color-preset/run/`。
 

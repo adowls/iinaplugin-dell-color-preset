@@ -151,8 +151,43 @@ iina.ws.onMessage((connection, message) => {
 // plugin toggles it through a state file.
 const blackoutStatePath = iina.utils.resolvePath("@data/blackout.state");
 const blackoutPidPath = iina.utils.resolvePath("@data/blackout.pid");
+const DEFAULT_BLACKOUT_HOTKEY = "Alt+Shift+b";
 let blackoutEnabled = false;
 let blackoutMenuItem = null;
+let blackoutMenuIndex = -1;
+let blackoutHotkey = null;
+
+// IINA turns a menu key binding into an AppKit key equivalent with
+// KeyCodeHelper.macOSKeyEquivalent(from:), which maps the modifier names
+// case-sensitively and ignores unknown tokens. Normalize the user's input to
+// IINA's tokens (Ctrl/Alt/Shift/Meta) so "cmd+shift+b" or "option+b" work, and
+// reject bare or multi-character keys so a single letter cannot shadow normal
+// player input.
+function normalizeHotkeyExpression(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return DEFAULT_BLACKOUT_HOTKEY;
+  const tokens = text.split("+").map((token) => token.trim()).filter(Boolean);
+  if (tokens.length < 2) return DEFAULT_BLACKOUT_HOTKEY;
+  const key = tokens.pop();
+  let hasCtrl = false, hasAlt = false, hasShift = false, hasMeta = false;
+  for (const token of tokens) {
+    switch (token.toLowerCase()) {
+      case "ctrl": case "control": hasCtrl = true; break;
+      case "alt": case "option": case "opt": hasAlt = true; break;
+      case "shift": hasShift = true; break;
+      case "cmd": case "command": case "meta": case "super": hasMeta = true; break;
+      default: return DEFAULT_BLACKOUT_HOTKEY;
+    }
+  }
+  if (key.length !== 1) return DEFAULT_BLACKOUT_HOTKEY; // Only single characters are supported.
+  const parts = [];
+  if (hasCtrl) parts.push("Ctrl");
+  if (hasAlt) parts.push("Alt");
+  if (hasShift) parts.push("Shift");
+  if (hasMeta) parts.push("Meta");
+  parts.push(key);
+  return parts.join("+");
+}
 
 function updateBlackoutMenuItem() {
   if (!blackoutMenuItem) return;
@@ -190,16 +225,38 @@ function toggleBlackout() {
   iina.console.log(`[Dell Color Preset] Black out other monitors: ${blackoutEnabled ? "on" : "off"}`);
 }
 
-function registerBlackoutControls() {
-  const storedKey = iina.preferences.get("blackout_hotkey");
-  const hotkey = typeof storedKey === "string" && storedKey.trim() ? storedKey.trim() : "Alt+Shift+b";
+// The key binding is fixed when a menu item is created, so changing the
+// preference has to rebuild the item. Doing that from a poll lets a new
+// shortcut take effect without restarting IINA.
+function registerBlackoutControls(hotkey) {
+  if (blackoutMenuItem && blackoutMenuIndex >= 0) {
+    try {
+      iina.menu.removeAt(blackoutMenuIndex);
+    } catch (error) {
+      iina.console.error(`[Dell Color Preset] Cannot replace blackout menu item: ${error}`);
+    }
+    blackoutMenuItem = null;
+  }
   try {
-    blackoutMenuItem = iina.menu.item("Black Out Other Monitors", toggleBlackout, { keyBinding: hotkey });
+    blackoutMenuItem = iina.menu.item(
+      blackoutEnabled ? "Disable Black Out Other Monitors" : "Black Out Other Monitors",
+      toggleBlackout,
+      { keyBinding: hotkey, selected: blackoutEnabled }
+    );
     iina.menu.addItem(blackoutMenuItem);
+    blackoutMenuIndex = Math.max(iina.menu.items().length - 1, 0);
+    blackoutHotkey = hotkey;
+    iina.menu.forceUpdate();
     iina.console.log(`[Dell Color Preset] Black out menu item registered with key binding ${hotkey}.`);
   } catch (error) {
     iina.console.error(`[Dell Color Preset] Cannot register blackout menu item: ${error}`);
   }
+}
+
+function syncBlackoutHotkey() {
+  const hotkey = normalizeHotkeyExpression(iina.preferences.get("blackout_hotkey"));
+  if (hotkey === blackoutHotkey) return;
+  registerBlackoutControls(hotkey);
 }
 
 async function initializePlugin() {
@@ -216,7 +273,10 @@ async function initializePlugin() {
   } catch (_) {
     // The state file is rewritten on the first toggle anyway.
   }
-  registerBlackoutControls();
+  syncBlackoutHotkey();
+  // Preferences have no change notification, so poll the key binding and
+  // rebuild the menu item when it changes.
+  setInterval(syncBlackoutHotkey, 2000);
   startHeartbeatServer();
 }
 

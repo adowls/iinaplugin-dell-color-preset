@@ -46,7 +46,7 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 
 ## 运行与卸载
 
-插件启动一个全局 watcher，每 500 ms 检查 IINA 窗口所在显示器，并在目标变化时通知 daemon。插件启动 IINA WebSocket API 的本机服务，Native Helper 每秒发送一条带序号和临时令牌的 `PING`，插件回复对应的 `PONG`。Helper 接受文本或二进制 WebSocket 数据帧（IINA 的 `sendText` 会以 UTF-8 二进制帧传输），最多等待 3 秒；超时或断连后关闭 daemon 的 Unix Socket 会话，由 daemon 恢复接管的显示器。插件从本地端口 `43120–43151` 中选择可用端口。心跳不再周期性写入磁盘；升级到此版本后，插件启动时会删除旧版遗留的 `@data/watcher.heartbeat`。标题栏归属使用窗口顶部 32 pt 区域判定。日志可在 IINA 的 **Window → Log Viewer** 查看。
+插件启动一个全局 watcher，每 500 ms 检查 IINA 窗口所在显示器，并在目标变化时通知 daemon。窗口枚举使用 `kCGWindowListOptionAll` 遍历所有 Space：macOS 原生全屏会把窗口移入独立 Space，`kCGWindowListOptionOnScreenOnly` 会把该窗口完全过滤掉。Helper 自行按 layer、透明度和最小尺寸筛选 IINA 窗口，再按「当前可见 → layer → 面积」排序选出主窗口；屏幕归属依次回退「窗口顶部 32 pt 标题栏带 → 整个窗口 frame → 窗口中心点」，窗口化与全屏都能正确判定。进入或退出全屏时最多保留 2 秒解析宽限期，避免切换动画期间 daemon 反复恢复又重新接管。插件启动 IINA WebSocket API 的本机服务，Native Helper 每秒发送一条带序号和临时令牌的 `PING`，插件回复对应的 `PONG`。Helper 接受文本或二进制 WebSocket 数据帧（IINA 的 `sendText` 会以 UTF-8 二进制帧传输），最多等待 3 秒；超时或断连后关闭 daemon 的 Unix Socket 会话，由 daemon 恢复接管的显示器。插件从本地端口 `43120–43151` 中选择可用端口。心跳不再周期性写入磁盘；升级到此版本后，插件启动时会删除旧版遗留的 `@data/watcher.heartbeat`。日志可在 IINA 的 **Window → Log Viewer** 查看。
 
 卸载时，在 IINA 的插件设置中移除 **Dell Display Color Preset**。IINA 结束插件会话后 daemon 会恢复其接管的显示器。插件数据目录 `@data` 中的 helper 和 Profile 文件可随插件一并删除；daemon 运行目录位于 `~/Library/Application Support/IINA/plugins/dell-color-preset/run/`。
 
@@ -61,11 +61,14 @@ IINA 会下载仓库内容，但不会执行 `make`。首次启动时，插件�
 ```sh
 native/build/display-helper list
 native/build/display-helper profiles
+native/build/display-helper probe
 native/build/display-helper get '10AC-436B-4247574C' 0xDC
 native/build/display-helper set '10AC-436B-4247574C' 0xDC 3
 native/build/display-helper daemon
 native/build/display-helper client
 ```
+
+`probe` 输出当前 IINA 窗口枚举与屏幕归属的 JSON 诊断（候选窗口、选中窗口、displayID、identity、判定方式和失败原因）。它不连接 daemon、不修改任何 Color Preset，可在窗口化和全屏下分别运行来排查显示器归属问题。
 
 默认 Socket 位于 `~/Library/Application Support/IINA/plugins/dell-color-preset/run/helper.sock`。daemon 创建权限为 `0700` 的运行目录、`0600` 的 Socket，并用相邻 lock 文件的 `flock` 阻止重复实例。client 自动发送 HELLO，然后把标准输入中的 JSON Lines 转发给 daemon；EOF 会断开会话并触发恢复。发送 QUIT 也会关闭会话并触发恢复。
 

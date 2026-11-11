@@ -43,46 +43,179 @@ static BOOL SendLine(int fd, NSDictionary *message, NSDictionary **response) {
     return YES;
 }
 
-static NSString *TargetIdentityForFrontmostIINAWindow(void) {
-    NSArray<NSRunningApplication *> *apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.colliderli.iina"];
-    if (!apps.count) return nil;
+static CGRect FrameFromWindowInfo(NSDictionary *window) {
+    NSDictionary *bounds = window[(id)kCGWindowBounds];
+    if (![bounds isKindOfClass:NSDictionary.class]) return CGRectNull;
+    return CGRectMake([bounds[@"X"] doubleValue], [bounds[@"Y"] doubleValue],
+                      [bounds[@"Width"] doubleValue], [bounds[@"Height"] doubleValue]);
+}
+
+static NSArray<NSNumber *> *ActiveDisplayIDs(void) {
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(0, NULL, &count) != kCGErrorSuccess || count == 0) return @[];
+    CGDirectDisplayID *ids = calloc(count, sizeof(CGDirectDisplayID));
+    if (!ids) return @[];
+    if (CGGetActiveDisplayList(count, ids, &count) != kCGErrorSuccess) { free(ids); return @[]; }
+    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:count];
+    for (uint32_t i = 0; i < count; i++) [result addObject:@(ids[i])];
+    free(ids);
+    return result;
+}
+
+static CGDirectDisplayID DisplayForRect(CGRect rect, NSArray<NSNumber *> *displayIDs) {
+    CGDirectDisplayID selected = kCGNullDirectDisplay;
+    CGFloat best = 0;
+    for (NSNumber *value in displayIDs) {
+        CGDirectDisplayID displayID = value.unsignedIntValue;
+        CGRect intersection = CGRectIntersection(rect, CGDisplayBounds(displayID));
+        CGFloat area = CGRectIsNull(intersection) ? 0 : intersection.size.width * intersection.size.height;
+        if (area > best) { best = area; selected = displayID; }
+    }
+    return best > 0 ? selected : kCGNullDirectDisplay;
+}
+
+static NSDictionary<NSString *, id> *CandidateRow(NSDictionary *candidate) {
+    CGRect frame = [candidate[@"_frame"] rectValue];
+    return @{
+        @"windowID": candidate[@"windowID"] ?: NSNull.null,
+        @"layer": candidate[@"layer"] ?: NSNull.null,
+        @"onscreen": candidate[@"onscreen"] ?: @NO,
+        @"alpha": candidate[@"alpha"] ?: @1,
+        @"bounds": @{
+            @"x": @(frame.origin.x), @"y": @(frame.origin.y),
+            @"width": @(frame.size.width), @"height": @(frame.size.height)
+        }
+    };
+}
+
+NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
+    NSArray<NSRunningApplication *> *apps =
+        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.colliderli.iina"];
+    NSMutableDictionary<NSString *, id> *diagnosis = [@{
+        @"iinaRunning": @(apps.count > 0),
+        @"windowListOption": @"kCGWindowListOptionAll",
+        @"candidateCount": @0,
+        @"candidates": @[],
+        @"selectedWindow": NSNull.null,
+        @"displayID": NSNull.null,
+        @"identity": NSNull.null,
+        @"reason": @"unknown"
+    } mutableCopy];
+    if (!apps.count) { diagnosis[@"reason"] = @"IINA is not running"; return diagnosis; }
+
     NSMutableSet<NSNumber *> *pids = [NSMutableSet set];
     for (NSRunningApplication *app in apps) [pids addObject:@(app.processIdentifier)];
-    CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
-    if (!windows) return nil;
-    CGRect titlebar = CGRectNull;
-    for (NSDictionary *window in CFBridgingRelease(windows)) {
-        if (![pids containsObject:window[(id)kCGWindowOwnerPID]] || [window[(id)kCGWindowLayer] intValue] != 0) continue;
-        NSDictionary *boundsValue = window[(id)kCGWindowBounds];
-        if (![boundsValue isKindOfClass:NSDictionary.class]) continue;
-        CGRect frame = CGRectMake([boundsValue[@"X"] doubleValue], [boundsValue[@"Y"] doubleValue],
-                                  [boundsValue[@"Width"] doubleValue], [boundsValue[@"Height"] doubleValue]);
-        if (CGRectIsEmpty(frame) || CGRectIsNull(frame)) continue;
-        // WindowServer bounds include the titlebar. Use only its top 32 pt band for screen assignment.
-        titlebar = CGRectMake(frame.origin.x, frame.origin.y, frame.size.width, MIN(32.0, frame.size.height));
-        break; // WindowServer returns front-to-back order.
-    }
-    if (CGRectIsNull(titlebar)) return nil;
 
-    uint32_t count = 0;
-    if (CGGetActiveDisplayList(0, NULL, &count) != kCGErrorSuccess || count == 0) return nil;
-    CGDirectDisplayID *ids = calloc(count, sizeof(CGDirectDisplayID));
-    if (!ids) return nil;
-    if (CGGetActiveDisplayList(count, ids, &count) != kCGErrorSuccess) { free(ids); return nil; }
-    CGDirectDisplayID selected = kCGNullDirectDisplay;
-    CGFloat bestIntersection = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        CGRect intersection = CGRectIntersection(titlebar, CGDisplayBounds(ids[i]));
-        CGFloat area = CGRectIsNull(intersection) ? 0 : intersection.size.width * intersection.size.height;
-        if (area > bestIntersection) { bestIntersection = area; selected = ids[i]; }
+    // A macOS native fullscreen Space is NOT part of the onscreen window set:
+    // with kCGWindowListOptionOnScreenOnly the fullscreen IINA window vanishes
+    // from the list entirely. Enumerate every Space and filter it ourselves.
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    if (!windowList) { diagnosis[@"reason"] = @"CGWindowListCopyWindowInfo returned NULL"; return diagnosis; }
+    NSArray *windows = CFBridgingRelease(windowList);
+    diagnosis[@"windowCount"] = @(windows.count);
+
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
+    for (NSDictionary *window in windows) {
+        if (![pids containsObject:window[(id)kCGWindowOwnerPID]]) continue;
+        NSNumber *layerValue = window[(id)kCGWindowLayer];
+        if (![layerValue isKindOfClass:NSNumber.class]) continue;
+        NSInteger layer = layerValue.integerValue;
+        // Exclude desktop/backdrop windows and IINA's high-level black-out helpers.
+        if (layer < 0 || layer > 1000) continue;
+        NSNumber *alphaValue = window[(id)kCGWindowAlpha];
+        double alpha = [alphaValue isKindOfClass:NSNumber.class] ? alphaValue.doubleValue : 1.0;
+        if (alpha < 0.05) continue;
+        CGRect frame = FrameFromWindowInfo(window);
+        if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) continue;
+        // Skip OSC strips, toolbars and other thin auxiliary windows. Taking the
+        // first entry of optionAll would otherwise pick a hidden 500x500 window
+        // or a transparent 2560x32 strip above the screen.
+        if (frame.size.width < 200 || frame.size.height < 150) continue;
+        [candidates addObject:@{
+            @"windowID": window[(id)kCGWindowNumber] ?: NSNull.null,
+            @"layer": layerValue,
+            @"onscreen": @([window[(id)kCGWindowIsOnscreen] boolValue]),
+            @"alpha": alphaValue ?: @1,
+            @"_frame": [NSValue valueWithRect:frame]
+        }];
     }
-    free(ids);
-    if (selected == kCGNullDirectDisplay || bestIntersection <= 0) return nil;
+
+    // Prefer a currently onscreen window, then a normal-level window, then the
+    // largest one. The fullscreen player window is the largest layer-0 window
+    // and has no kCGWindowIsOnscreen key while it lives in its own Space.
+    [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        BOOL oa = [a[@"onscreen"] boolValue], ob = [b[@"onscreen"] boolValue];
+        if (oa != ob) return oa ? NSOrderedAscending : NSOrderedDescending;
+        NSInteger la = [a[@"layer"] integerValue], lb = [b[@"layer"] integerValue];
+        if (la != lb) return la < lb ? NSOrderedAscending : NSOrderedDescending;
+        CGRect fa = [a[@"_frame"] rectValue], fb = [b[@"_frame"] rectValue];
+        CGFloat aa = fa.size.width * fa.size.height, ab = fb.size.width * fb.size.height;
+        return aa > ab ? NSOrderedAscending : (aa < ab ? NSOrderedDescending : NSOrderedSame);
+    }];
+
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray arrayWithCapacity:candidates.count];
+    for (NSDictionary *candidate in candidates) [rows addObject:CandidateRow(candidate)];
+    diagnosis[@"candidateCount"] = @(candidates.count);
+    diagnosis[@"candidates"] = rows;
+
+    NSArray<NSNumber *> *displayIDs = ActiveDisplayIDs();
+    if (!displayIDs.count) { diagnosis[@"reason"] = @"No active displays"; return diagnosis; }
+
+    CGDirectDisplayID selected = kCGNullDirectDisplay;
+    NSDictionary<NSString *, id> *selectedRow = nil;
+    NSString *assignment = nil;
+    for (NSDictionary *candidate in candidates) {
+        CGRect frame = [candidate[@"_frame"] rectValue];
+        // Windowed: the top 32pt titlebar band decides which screen owns the
+        // window. Fullscreen: there is no titlebar, so fall back to the whole
+        // frame and finally to the window centre point.
+        CGRect titlebar = CGRectMake(frame.origin.x, frame.origin.y,
+                                     frame.size.width, MIN(32.0, frame.size.height));
+        selected = DisplayForRect(titlebar, displayIDs);
+        assignment = @"titlebar";
+        if (selected == kCGNullDirectDisplay) {
+            selected = DisplayForRect(frame, displayIDs);
+            assignment = @"fullFrame";
+        }
+        if (selected == kCGNullDirectDisplay) {
+            CGPoint centre = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+            for (NSNumber *value in displayIDs) {
+                if (CGRectContainsPoint(CGDisplayBounds(value.unsignedIntValue), centre)) {
+                    selected = value.unsignedIntValue;
+                    assignment = @"centrePoint";
+                    break;
+                }
+            }
+        }
+        if (selected == kCGNullDirectDisplay) continue;
+        selectedRow = CandidateRow(candidate);
+        break; // The first assignable candidate is the player window.
+    }
+    if (selected == kCGNullDirectDisplay) {
+        diagnosis[@"reason"] = candidates.count
+            ? @"No candidate window could be assigned to a display"
+            : @"No IINA player window found";
+        return diagnosis;
+    }
+
+    diagnosis[@"selectedWindow"] = selectedRow;
+    diagnosis[@"displayID"] = @(selected);
+    diagnosis[@"assignment"] = assignment;
     NSError *error = nil;
     for (DisplayInfo *display in DiscoverDisplays(&error)) {
-        if (display.displayID == selected && display.identity.length) return display.identity;
+        if (display.displayID == selected && display.identity.length) {
+            diagnosis[@"identity"] = display.identity;
+            diagnosis[@"reason"] = @"resolved";
+            return diagnosis;
+        }
     }
-    return nil;
+    diagnosis[@"reason"] = @"Selected display has no stable verified identity";
+    return diagnosis;
+}
+
+static NSString *IdentityFromDiagnosis(NSDictionary *diagnosis) {
+    id identity = diagnosis[@"identity"];
+    return [identity isKindOfClass:NSString.class] ? identity : nil;
 }
 
 static BOOL StartDaemon(NSString *helperPath) {
@@ -317,6 +450,8 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
     NSUInteger requestID = 2;
     NSUInteger heartbeatSequence = 1;
     time_t nextHeartbeat = 0;
+    NSUInteger unresolvedSamples = 0;
+    const NSUInteger kUnresolvedGraceSamples = 4; // 4 x 500 ms
     pid_t parentPID = getppid();
     while (kill(parentPID, 0) == 0) {
         time_t now = time(NULL);
@@ -329,7 +464,26 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
             nextHeartbeat = time(NULL) + 1;
         }
         @autoreleasepool {
-            NSString *identity = TargetIdentityForFrontmostIINAWindow();
+            NSDictionary *diagnosis = ResolveIINAWindowTarget();
+            NSString *identity = IdentityFromDiagnosis(diagnosis);
+
+            // Entering or leaving a native fullscreen Space briefly hides the
+            // player window from WindowServer. Hold the previous target for up
+            // to 2s so the daemon does not restore and re-acquire on every
+            // fullscreen transition.
+            if (identity) {
+                unresolvedSamples = 0;
+            } else if (lastObserved.length > 0 &&
+                       ![lastObserved isEqualToString:@"__initial__"] &&
+                       unresolvedSamples < kUnresolvedGraceSamples) {
+                unresolvedSamples++;
+                NSString *reason = [diagnosis[@"reason"] isKindOfClass:NSString.class]
+                    ? diagnosis[@"reason"] : @"unknown";
+                fprintf(stderr, "[INFO] No IINA target resolved (%lu/%lu): %s; holding previous target\n",
+                        (unsigned long)unresolvedSamples, (unsigned long)kUnresolvedGraceSamples,
+                        reason.UTF8String);
+                identity = lastObserved;
+            }
             NSString *normalized = identity ?: @"";
             BOOL targetChanged = ![normalized isEqualToString:lastObserved];
             if (targetChanged || (!lastRequestSucceeded && time(NULL) >= retryAfter)) {

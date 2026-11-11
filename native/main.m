@@ -96,6 +96,19 @@ int main(int argc, const char *argv[]) {
             }
             return 0;
         }
+        if ([command isEqualToString:@"probe"] && argc == 2) {
+            NSDictionary *diagnosis = ResolveIINAWindowTarget();
+            NSError *error = nil;
+            NSData *json = [NSJSONSerialization dataWithJSONObject:diagnosis
+                                                           options:NSJSONWritingPrettyPrinted
+                                                             error:&error];
+            if (!json) {
+                fprintf(stderr, "probe serialization failed: %s\n", error.localizedDescription.UTF8String);
+                return 1;
+            }
+            puts([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String);
+            return 0;
+        }
         if ([command isEqualToString:@"watch"] && argc == 4) {
             char *end = NULL;
             unsigned long port = strtoul(argv[2], &end, 10);
@@ -143,7 +156,7 @@ int main(int argc, const char *argv[]) {
                    argv[2], feature, value);
             return 0;
         }
-        fprintf(stderr, "Usage:\n  display-helper list\n  display-helper profiles\n  display-helper get <identity> <feature>\n  display-helper set <identity> <feature> <value>\n  display-helper daemon [--socket <path>]\n  display-helper client [<socket-path>]\n");
+        fprintf(stderr, "Usage:\n  display-helper list\n  display-helper profiles\n  display-helper probe\n  display-helper get <identity> <feature>\n  display-helper set <identity> <feature> <value>\n  display-helper daemon [--socket <path>]\n  display-helper client [<socket-path>]\n");
         return 2;
     }
 }

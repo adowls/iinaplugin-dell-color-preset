@@ -7,6 +7,7 @@
 #import <unistd.h>
 #import <errno.h>
 #import <string.h>
+#import <time.h>
 
 static const NSUInteger kMaximumMessageLength = 65536;
 static NSString * const SocketErrorDomain = @"DisplaySocketServer";
@@ -281,23 +282,41 @@ static NSDictionary *ErrorResponse(id requestID, NSString *code, NSString *messa
     shutdown(clientFD, SHUT_RDWR);
     close(clientFD);
 
+    // Stop listening and remove the socket file immediately after the client
+    // disconnects, BEFORE the pending-restore retry loop below. A daemon that
+    // is still retrying DDC restorations keeps holding the flock; if its
+    // (zombie) listening socket stayed bound, the next session's watcher
+    // would connect to it, send HELLO, and block forever on a reply that
+    // never comes — leaving that entire IINA session without mode switching.
+    close(serverFD);
+    struct stat disconnectedSocket;
+    if (hasSocketIdentity && lstat(self.socketPath.fileSystemRepresentation, &disconnectedSocket) == 0 &&
+        S_ISSOCK(disconnectedSocket.st_mode) && disconnectedSocket.st_dev == socketIdentity.st_dev &&
+        disconnectedSocket.st_ino == socketIdentity.st_ino && disconnectedSocket.st_uid == getuid()) {
+        unlink(self.socketPath.fileSystemRepresentation);
+    }
+
     [self.stateManager releaseAll];
     NSTimeInterval interval = self.initialRetryInterval;
+    // Bound the retry window: a display that stays unreachable would
+    // otherwise keep the daemon (and its flock) alive forever, blocking every
+    // future session from starting a daemon. Ten minutes is long enough for
+    // display sleep/wake cycles while still recovering eventually.
+    const time_t retryGiveUpAt = time(NULL) + 600;
     while (YES) {
         NSArray *managedDisplays = [self.stateManager statusDictionary][@"managedDisplays"];
         if (managedDisplays.count == 0) break;
+        if (time(NULL) >= retryGiveUpAt) {
+            // Give up with the restoration still pending; the display can be
+            // reset manually from its OSD. Exiting releases the lock so a new
+            // daemon can serve the next session.
+            break;
+        }
         usleep((useconds_t)(interval * 1000000.0));
         [self.stateManager retryPendingRestorations];
         interval = MIN(interval * 2.0, self.maximumRetryInterval);
     }
 
-    close(serverFD);
-    struct stat finalSocket;
-    if (hasSocketIdentity && lstat(self.socketPath.fileSystemRepresentation, &finalSocket) == 0 &&
-        S_ISSOCK(finalSocket.st_mode) && finalSocket.st_dev == socketIdentity.st_dev &&
-        finalSocket.st_ino == socketIdentity.st_ino && finalSocket.st_uid == getuid()) {
-        unlink(self.socketPath.fileSystemRepresentation);
-    }
     close(lockFD);
     return YES;
 }

@@ -112,11 +112,13 @@
       document.getElementById("save").addEventListener("click", () => {
         try {
           validate(JSON.parse(editor.value));
+          // window.iina.preferences on the preference page has no sync()
+          // method (only set/get); values persist when the settings window is
+          // closed with Done, so no explicit sync is possible or needed here.
           prefs.set(key, editor.value);
-          prefs.sync();
           boundPreference.value = editor.value;
           boundPreference.dispatchEvent(new Event("change", { bubbles: true }));
-          status.textContent = "Saved. Fully quit and restart IINA to apply these profiles.";
+          status.textContent = "Saved. Close the settings window with Done to persist, then fully quit and restart IINA to apply these profiles.";
           status.className = "small";
         } catch (error) {
           status.textContent = error instanceof SyntaxError ? `Invalid JSON: ${error.message}` : error.message;

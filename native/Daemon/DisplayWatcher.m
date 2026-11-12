@@ -512,6 +512,12 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
         usleep(100000);
     }
     if (fd < 0) { if (error) *error = [NSError errorWithDomain:@"DisplayWatcher" code:ECONNREFUSED userInfo:@{NSLocalizedDescriptionKey: @"Unable to connect to display daemon"}]; return NO; }
+    // Never block forever on a daemon that stopped responding (e.g. a stale
+    // daemon from a previous session parked on the socket): a request that
+    // cannot complete within 5 seconds fails the watcher instead.
+    struct timeval daemonSocketTimeout = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &daemonSocketTimeout, sizeof(daemonSocketTimeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &daemonSocketTimeout, sizeof(daemonSocketTimeout));
     NSDictionary *reply = nil;
     if (!SendLine(fd, @{ @"type": @"HELLO", @"requestId": @1 }, &reply) || ![reply[@"success"] boolValue]) { close(fd); return NO; }
 
@@ -531,16 +537,31 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
     time_t nextHeartbeat = 0;
     NSUInteger unresolvedSamples = 0;
     const NSUInteger kUnresolvedGraceSamples = 4; // 4 x 500 ms
+    NSUInteger heartbeatFailures = 0;
+    const NSUInteger kHeartbeatFailureLimit = 3;
     pid_t parentPID = getppid();
     while (kill(parentPID, 0) == 0) {
         time_t now = time(NULL);
         if (now >= nextHeartbeat) {
             NSString *heartbeatFailure = nil;
             if (!SendPluginHeartbeat(heartbeatFD, heartbeatToken, heartbeatSequence++, &heartbeatFailure)) {
-                fprintf(stderr, "[ERROR] Plugin heartbeat failed: %s\n", heartbeatFailure.UTF8String);
-                break;
+                heartbeatFailures += 1;
+                fprintf(stderr, "[ERROR] Plugin heartbeat failed (%lu consecutive): %s\n",
+                        (unsigned long)heartbeatFailures, heartbeatFailure.UTF8String);
+                if (heartbeatFailures >= kHeartbeatFailureLimit) {
+                    fprintf(stderr, "[ERROR] Plugin heartbeat failed %lu times in a row; giving up\n",
+                            (unsigned long)kHeartbeatFailureLimit);
+                    break;
+                }
+                // Retry the heartbeat shortly instead of killing the session:
+                // a briefly busy IINA (startup, file loading) can delay the
+                // PONG past the 3 s socket timeout once without anything
+                // actually being wrong.
+                nextHeartbeat = time(NULL) + 2;
+            } else {
+                heartbeatFailures = 0;
+                nextHeartbeat = time(NULL) + 1;
             }
-            nextHeartbeat = time(NULL) + 1;
         }
         @autoreleasepool {
             NSDictionary *diagnosis = ResolveIINAWindowTarget();
@@ -587,5 +608,9 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
     }
     close(heartbeatFD);
     close(fd); // The daemon restores managed displays when this session ends.
-    return YES;
+    // A zero exit status means the watcher ended because IINA itself went
+    // away (normal shutdown). Any abnormal end — heartbeat or socket failure
+    // while the parent is still alive — returns NO so the plugin's global
+    // entry sees a non-zero exit code and relaunches the watcher.
+    return kill(parentPID, 0) == 0 ? NO : YES;
 }

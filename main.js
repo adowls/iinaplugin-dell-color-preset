@@ -93,18 +93,41 @@ async function installBundledHelper() {
 
 function launchNativeWatcher(port) {
   watcherStarted = true;
+  const startedAt = Date.now();
   iina.console.log(`[Dell Color Preset] Starting native display watcher on heartbeat socket port ${port}.`);
   iina.utils.exec(helperPath, ["watch", String(port), heartbeatToken], undefined, undefined, (data) => {
     if (data) iina.console.error(`[Dell Color Preset] ${data.trim()}`);
   }).then(({ status, stderr }) => {
+    watcherStarted = false;
+    // A watcher that survived for a while earned a backoff reset.
+    if (Date.now() - startedAt > 60000) watcherRelaunchDelayMs = 5000;
     if (status !== 0) {
-      iina.console.error(`[Dell Color Preset] Watcher exited (${status}): ${stderr.trim()}`);
+      // Non-zero means the watcher died while IINA is still running (heartbeat
+      // or socket failure). Relaunch it so the session keeps switching modes.
+      iina.console.error(`[Dell Color Preset] Watcher exited abnormally (${status}); will relaunch: ${stderr.trim()}`);
+      scheduleWatcherRelaunch(port);
     } else {
       iina.console.log("[Dell Color Preset] Display watcher stopped.");
     }
   }).catch((error) => {
+    watcherStarted = false;
     iina.console.error(`[Dell Color Preset] Unable to start watcher: ${error}`);
+    scheduleWatcherRelaunch(port);
   });
+}
+
+let watcherRelaunchTimer = null;
+let watcherRelaunchDelayMs = 5000;
+function scheduleWatcherRelaunch(port) {
+  if (watcherRelaunchTimer) return;
+  const delay = watcherRelaunchDelayMs;
+  watcherRelaunchDelayMs = Math.min(watcherRelaunchDelayMs * 2, 60000);
+  watcherRelaunchTimer = setTimeout(() => {
+    watcherRelaunchTimer = null;
+    if (watcherStarted) return;
+    iina.console.log(`[Dell Color Preset] Relaunching display watcher after ${delay} ms backoff.`);
+    launchNativeWatcher(port);
+  }, delay);
 }
 
 function startHeartbeatServer() {
@@ -180,12 +203,16 @@ function normalizeHotkeyExpression(raw) {
     }
   }
   if (key.length !== 1) return DEFAULT_BLACKOUT_HOTKEY; // Only single characters are supported.
+  // Always emit a lowercase key character. IINA passes it verbatim into
+  // NSMenuItem.keyEquivalent, and AppKit treats an uppercase key-equivalent
+  // character as requiring the Shift key: "Alt+B" would only fire on
+  // Alt+Shift+B, silently reverting the shortcut to the default keystroke.
   const parts = [];
   if (hasCtrl) parts.push("Ctrl");
   if (hasAlt) parts.push("Alt");
   if (hasShift) parts.push("Shift");
   if (hasMeta) parts.push("Meta");
-  parts.push(key);
+  parts.push(key.toLowerCase());
   return parts.join("+");
 }
 
@@ -253,10 +280,22 @@ function registerBlackoutControls(hotkey) {
   }
 }
 
+let blackoutHotkeyRaw = null;
 function syncBlackoutHotkey() {
-  const hotkey = normalizeHotkeyExpression(iina.preferences.get("blackout_hotkey"));
-  if (hotkey === blackoutHotkey) return;
-  registerBlackoutControls(hotkey);
+  // Compare the raw preference (not the normalized form) so that every edit
+  // persists. IINA's preference page only writes preferences to disk when its
+  // sheet closes with Done, so an edit that was never "Done"-ed would
+  // otherwise be lost on restart.
+  const raw = iina.preferences.get("blackout_hotkey");
+  const rawKey = typeof raw === "string" ? raw.trim() : "";
+  if (rawKey === blackoutHotkeyRaw) return;
+  blackoutHotkeyRaw = rawKey;
+  registerBlackoutControls(normalizeHotkeyExpression(raw));
+  try {
+    iina.preferences.sync();
+  } catch (error) {
+    iina.console.error(`[Dell Color Preset] Cannot persist blackout hotkey: ${error}`);
+  }
 }
 
 async function initializePlugin() {

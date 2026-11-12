@@ -95,6 +95,15 @@ static NSDictionary<NSString *, id> *CandidateRow(NSDictionary *candidate) {
 // onscreen on another display from stealing the target while the player
 // window itself sits in a background Space.
 static NSNumber *TrackedMainWindowID = nil;
+// The display the tracked window was last visible on. When the tracked
+// window disappears from the screen, a visible IINA window on THIS display
+// may legitimately take over: it is either the player coming back from a
+// fullscreen transition, or the player itself after an auxiliary window
+// (Settings, plugin sheets, the quick-open window) that had stolen tracking
+// closed for good. Such auxiliary windows stay in the window list forever
+// once hidden, and the 1.5x area rule can never displace them, so without
+// this the target would be stuck on a ghost window for the whole session.
+static CGDirectDisplayID TrackedMainWindowLastDisplay = kCGNullDirectDisplay;
 
 static BOOL FrameMatchesADisplay(CGRect frame, NSArray<NSNumber *> *displayIDs) {
     for (NSNumber *value in displayIDs) {
@@ -105,7 +114,39 @@ static BOOL FrameMatchesADisplay(CGRect frame, NSArray<NSNumber *> *displayIDs) 
     return NO;
 }
 
-NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
+// Windowed: the top 32pt titlebar band decides which screen owns the window.
+// Fullscreen: there is no titlebar, so fall back to the whole frame and
+// finally to the window centre point.
+static CGDirectDisplayID DisplayForCandidate(NSDictionary *candidate, NSArray<NSNumber *> *displayIDs, NSString **assignment) {
+    CGRect frame = [candidate[@"_frame"] rectValue];
+    CGRect titlebar = CGRectMake(frame.origin.x, frame.origin.y,
+                                 frame.size.width, MIN(32.0, frame.size.height));
+    CGDirectDisplayID selected = DisplayForRect(titlebar, displayIDs);
+    if (selected != kCGNullDirectDisplay) {
+        if (assignment) *assignment = @"titlebar";
+        return selected;
+    }
+    selected = DisplayForRect(frame, displayIDs);
+    if (selected != kCGNullDirectDisplay) {
+        if (assignment) *assignment = @"fullFrame";
+        return selected;
+    }
+    CGPoint centre = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    for (NSNumber *value in displayIDs) {
+        if (CGRectContainsPoint(CGDisplayBounds(value.unsignedIntValue), centre)) {
+            if (assignment) *assignment = @"centrePoint";
+            return value.unsignedIntValue;
+        }
+    }
+    return kCGNullDirectDisplay;
+}
+
+void SeedTrackedMainWindow(NSNumber *windowID, CGDirectDisplayID displayID) {
+    TrackedMainWindowID = windowID;
+    TrackedMainWindowLastDisplay = displayID;
+}
+
+NSDictionary<NSString *, id> *ResolveIINAWindowTarget(BOOL holdTarget) {
     NSArray<NSRunningApplication *> *apps =
         [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.colliderli.iina"];
     NSMutableDictionary<NSString *, id> *diagnosis = [@{
@@ -192,7 +233,9 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
     // more authoritative: a fullscreen-sized window (auxiliary panels are
     // never fullscreen-sized) or one at least 1.5x larger in area, which is
     // what happens when the player window opens after only the playlist was
-    // visible.
+    // visible. That size rule can also let a big auxiliary window (IINA's
+    // Settings, a plugin sheet) hijack tracking while it is open; the
+    // invisible-tracked handling below recovers from that once it closes.
     NSDictionary<NSString *, id> *trackedCandidate = nil;
     if (TrackedMainWindowID) {
         for (NSDictionary *candidate in candidates) {
@@ -222,8 +265,41 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
     NSDictionary<NSString *, id> *selectedCandidate = nil;
     NSString *pickedBy = nil;
     if (trackedCandidate && !replaceTracked) {
-        selectedCandidate = trackedCandidate;
-        pickedBy = @"trackedWindow";
+        if ([trackedCandidate[@"visible"] boolValue]) {
+            selectedCandidate = trackedCandidate;
+            pickedBy = @"trackedWindow";
+        } else {
+            // The tracked window is off-screen. It may be the player sitting
+            // in a background Space (keep tracking it, hold semantics), or a
+            // closed auxiliary window that will never come back. Prefer any
+            // visible IINA window on the display the tracked window was last
+            // seen on — that is the player returning to its own screen.
+            NSDictionary *revival = nil;
+            if (TrackedMainWindowLastDisplay != kCGNullDirectDisplay) {
+                for (NSDictionary *candidate in candidates) { // Sorted: visible, layer, area.
+                    if (![candidate[@"visible"] boolValue]) continue;
+                    if (DisplayForCandidate(candidate, displayIDs, NULL) == TrackedMainWindowLastDisplay) {
+                        revival = candidate; // First visible match is the largest on that display.
+                        break;
+                    }
+                }
+            }
+            if (revival) {
+                selectedCandidate = revival;
+                pickedBy = @"revivedOnTrackedDisplay";
+            } else if (bestCandidate && [bestCandidate[@"visible"] boolValue] && !holdTarget) {
+                // No target is held at all (fresh session, or everything was
+                // released): start over from the best visible window.
+                selectedCandidate = bestCandidate;
+                pickedBy = @"reEstablished";
+            } else {
+                // Genuine background Space (or a target on another display is
+                // held): keep tracking the invisible window; the watcher's
+                // grace period then releases the target.
+                selectedCandidate = trackedCandidate;
+                pickedBy = @"trackedWindowBackground";
+            }
+        }
     } else if (candidates.count) {
         selectedCandidate = bestCandidate;
         pickedBy = trackedCandidate ? @"switchedToLargerWindow" : @"reEstablished";
@@ -250,32 +326,12 @@ NSDictionary<NSString *, id> *ResolveIINAWindowTarget(void) {
 
     CGDirectDisplayID selected = kCGNullDirectDisplay;
     NSString *assignment = nil;
-    CGRect frame = [selectedCandidate[@"_frame"] rectValue];
-    // Windowed: the top 32pt titlebar band decides which screen owns the
-    // window. Fullscreen: there is no titlebar, so fall back to the whole
-    // frame and finally to the window centre point.
-    CGRect titlebar = CGRectMake(frame.origin.x, frame.origin.y,
-                                 frame.size.width, MIN(32.0, frame.size.height));
-    selected = DisplayForRect(titlebar, displayIDs);
-    assignment = @"titlebar";
-    if (selected == kCGNullDirectDisplay) {
-        selected = DisplayForRect(frame, displayIDs);
-        assignment = @"fullFrame";
-    }
-    if (selected == kCGNullDirectDisplay) {
-        CGPoint centre = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
-        for (NSNumber *value in displayIDs) {
-            if (CGRectContainsPoint(CGDisplayBounds(value.unsignedIntValue), centre)) {
-                selected = value.unsignedIntValue;
-                assignment = @"centrePoint";
-                break;
-            }
-        }
-    }
+    selected = DisplayForCandidate(selectedCandidate, displayIDs, &assignment);
     if (selected == kCGNullDirectDisplay) {
         diagnosis[@"reason"] = @"Player window could not be assigned to a display";
         return diagnosis;
     }
+    TrackedMainWindowLastDisplay = selected;
 
     diagnosis[@"selectedWindow"] = CandidateRow(selectedCandidate);
     diagnosis[@"displayID"] = @(selected);
@@ -564,7 +620,8 @@ BOOL RunDisplayWatcher(NSString *helperPath, NSString *socketPath, uint16_t hear
             }
         }
         @autoreleasepool {
-            NSDictionary *diagnosis = ResolveIINAWindowTarget();
+            BOOL holdTarget = lastObserved.length > 0 && ![lastObserved isEqualToString:@"__initial__"];
+            NSDictionary *diagnosis = ResolveIINAWindowTarget(holdTarget);
             NSString *identity = IdentityFromDiagnosis(diagnosis);
 
             // Entering or leaving a native fullscreen Space briefly hides the

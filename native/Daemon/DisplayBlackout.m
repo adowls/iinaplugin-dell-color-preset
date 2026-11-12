@@ -102,7 +102,7 @@ BOOL RunDisplayBlackout(NSString *statePath, NSString *pidPath) {
             if (kill(parentPID, 0) != 0) break;
             if ([NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.colliderli.iina"].count == 0) break;
 
-            NSDictionary *diagnosis = ResolveIINAWindowTarget();
+            NSDictionary *diagnosis = ResolveIINAWindowTarget(YES);
             NSNumber *displayValue = diagnosis[@"displayID"];
             CGDirectDisplayID playerDisplay = [displayValue isKindOfClass:NSNumber.class]
                 ? displayValue.unsignedIntValue : kCGNullDirectDisplay;

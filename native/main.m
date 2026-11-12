@@ -102,8 +102,21 @@ int main(int argc, const char *argv[]) {
                                [NSString stringWithUTF8String:argv[3]]);
             return 0;
         }
-        if ([command isEqualToString:@"probe"] && argc == 2) {
-            NSDictionary *diagnosis = ResolveIINAWindowTarget();
+        if ([command isEqualToString:@"probe"] && (argc == 2 || argc == 4)) {
+            // Optional diagnostic seeding: `probe <windowID> <displayID>`
+            // simulates a watcher that latched onto the given window (e.g. a
+            // closed auxiliary window) while it was last visible on the
+            // display, reproducing the stuck-tracker state for testing.
+            if (argc == 4) {
+                unsigned long long windowID = 0, displayID = 0;
+                if (!ParseUnsigned([NSString stringWithUTF8String:argv[2]], UINT64_MAX, &windowID) ||
+                    !ParseUnsigned([NSString stringWithUTF8String:argv[3]], UINT32_MAX, &displayID)) {
+                    fprintf(stderr, "probe seeding requires numeric windowID and displayID\n");
+                    return 2;
+                }
+                SeedTrackedMainWindow(@(windowID), (CGDirectDisplayID)displayID);
+            }
+            NSDictionary *diagnosis = ResolveIINAWindowTarget(NO);
             NSError *error = nil;
             NSData *json = [NSJSONSerialization dataWithJSONObject:diagnosis
                                                            options:NSJSONWritingPrettyPrinted
